@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <assert.h>
 
+#define _FILE_OFFSET_BITS 64
 #define FUSE_USE_VERSION 35
 #include <fuse3/fuse_lowlevel.h>
 #include <fuse3/fuse.h>
@@ -17,6 +18,7 @@
 #include "libnfs.h"
 #include "libnfs-raw.h"
 #include "libnfs-raw-mount.h"
+#include "nfsc/libnfs-raw-nfs.h"
 
 #include <string>
 
