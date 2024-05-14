@@ -8,6 +8,7 @@
 // TODO : This needs to be extended going forward for each of the nfs apis.
 class NfsApiContext;
 class NfsApiContextParentName;
+class NfsApiContextInode;
 
 extern "C" {
     // libnfs does not offer a prototype for this in any public header,
@@ -87,9 +88,9 @@ public:
     {
         static NfsClient instance{acctName, contName, blobSuffix, opt};
 
-	// NfsClient::Init() should be called before calling this.
+        // NfsClient::Init() should be called before calling this.
         assert(IsNfsClientInitd());
-	return instance;
+        return instance;
     }
 
     // This is the method which should be called to get an instance of this class by the user.
@@ -136,11 +137,15 @@ public:
 
     //
     // Define Nfsv3 APi specific functions and helpers after this point.
-    // TODO: For now I have just added the methods needed for lookup call, add more going forward.
+    // TODO: For now I have just added the methods needed for few calls, add more going forward.
     //
     static void stat_from_fattr3(struct stat* st, const struct fattr3* attr);
 
-    virtual void replyEntry(
+    void getattrWithContext(NfsApiContextInode* ctx);
+
+    void getattr(fuse_req_t req, fuse_ino_t inode, struct fuse_file_info* file);
+
+    void replyEntry(
         NfsApiContext* ctx,
         const nfs_fh3* fh,
         const struct fattr3* attr,

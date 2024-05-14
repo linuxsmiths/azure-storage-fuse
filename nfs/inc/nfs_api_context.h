@@ -45,9 +45,19 @@ public:
         return maxErrnoRetries;
     }
 
-    struct nfs_context* GetNfsContext()
+    struct nfs_context* GetNfsContext() const
     {
         return client->GetNfsContext();
+    }
+
+    struct rpc_context* GetRpcCtx() const
+    {
+        return nfs_get_rpc_context(GetNfsContext());
+    }
+
+    NfsClient* getClient() const
+    {
+        return client;
     }
 
     // This method will reply with error and delete the context object.
@@ -188,6 +198,13 @@ public:
         }
     }
 
+    // This is called to send reply of getattr request.
+    void replyAttr(const struct stat* attr, double attr_timeout)
+    {
+        fuse_reply_attr(req, attr, attr_timeout);
+        delete this;
+    }
+
     // This should also contain all the methods needed to send reply back to the client as we use low level fuse API calls.
     // Just adding the write method now, other methods should be added.
     void replyWrite(size_t count)
@@ -205,6 +222,7 @@ public:
         fuse_reply_entry(req, e);
         delete this;
     }
+
 
 
 #if 0 // Move these methods out as and when you implement them.
@@ -243,13 +261,6 @@ public:
         delete this;
     }
 
-    void replyAttr(const struct stat* attr, double attr_timeout) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-        fuse_reply_attr(req_, attr, attr_timeout);
-        delete this;
-    }
 
     void replyWrite(size_t count) {
         finishOperation();
@@ -277,14 +288,33 @@ public:
 
 #endif
 
-    NfsClient* getClient() const {
-        return client;
-    }
-
     struct fuse_req* getReq() const {
         return req;
     }
 };
+
+/// @brief base class for operations which take an inode.
+class NfsApiContextInode :  public NfsApiContext
+{
+public:
+    NfsApiContextInode(
+        NfsClient* client,
+        struct fuse_req* req,
+        enum fuse_optype optype,
+        fuse_ino_t ino)
+        : NfsApiContext(client, req, optype) {
+        inode = ino;
+    }
+
+    fuse_ino_t getInode() const
+    {
+        return inode;
+    }
+
+private:
+    fuse_ino_t inode;
+};
+
 
 
 /// @brief base class for operations which take a parent inode and a name.
@@ -297,7 +327,7 @@ public:
         fuse_ino_t parent,
         const char* name)
         : NfsApiContext(client, req, optype),
-	  parentIno(parent)
+          parentIno(parent)
     {
         fileName = ::strdup(name);
     }
