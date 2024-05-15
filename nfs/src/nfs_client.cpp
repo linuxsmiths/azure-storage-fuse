@@ -33,7 +33,8 @@ bool NfsClient::Init(
             return false;
         }
 
-        // Initialiaze the root file handle
+        // Initialiaze the root file handle.
+	// TODO: Take care of freeing this. Should this be freed in the ~NfsClient()?
         rootFh = new NFSFileHandle(nfs_get_rootfh(transport->GetNfsContext()) /*, 1  ino will be 1 for root */);
         rootFh->SetInode(1);
         //AZLogInfo("Obtained root fh is {}", rootFh->GetFh());
@@ -73,7 +74,7 @@ static void getattrCallback(
     }
     else
     {
-        // Since the api failed and can no longer be retried, retrun error reply.
+        // Since the api failed and can no longer be retried, return error reply.
         ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
     }
 }
@@ -81,11 +82,11 @@ static void getattrCallback(
 void NfsClient::getattrWithContext(NfsApiContextInode* ctx) {
     bool rpcRetry = false;
     auto inode = ctx->getInode();
+   
     do {
         struct GETATTR3args args;
         ::memset(&args, 0, sizeof(args));
         args.object = GetFhFromInode(inode)->GetFh();
-
 
         if (rpc_nfs3_getattr_task(ctx->GetRpcCtx(), getattrCallback, &args, ctx) == NULL)
         {
@@ -93,7 +94,6 @@ void NfsClient::getattrWithContext(NfsApiContextInode* ctx) {
             // and not due to an actual error, hence retry.
             rpcRetry = true;
         }
-
     } while (rpcRetry);
 }
 
@@ -108,44 +108,6 @@ void NfsClient::getattr(
     //
     auto ctx = new NfsApiContextInode(this, req, FOPTYPE_GETATTR, inode);
     getattrWithContext(ctx);
-}
-
-// Creates a new inode for the given fh and passes it to fuse_reply_entry().
-void NfsClient::replyEntry(
-    NfsApiContext* ctx,
-    const nfs_fh3* fh,
-    const struct fattr3* attr,
-    const struct fuse_file_info* file)
-{
-
-    NFSFileHandle* filehandle;
-    if (fh) {
-        filehandle = new NFSFileHandle(fh);
-        filehandle->SetInode((fuse_ino_t)filehandle);
-    } else {
-        filehandle = nullptr;
-    }
-
-    fuse_entry_param entry;
-    memset(&entry, 0, sizeof(entry));
-
-    stat_from_fattr3(&entry.attr, attr);
-    entry.ino = (fuse_ino_t)(uintptr_t)filehandle;
-
-    /*
-     * TODO: Set the timeout to better value.
-     */
-    entry.attr_timeout = 60; //attrTimeout;
-    entry.entry_timeout = 60; //attrTimeout;
-
-    if (file)
-    {
-        ctx->replyCreate(&entry, file);
-    }
-    else
-    {
-        ctx->replyEntry(&entry);
-    }
 }
 
 static void lookupCallback(
@@ -193,13 +155,13 @@ static void lookupCallback(
     }
     else
     {
-        // Since the api failed and can no longer be retried, retrun error reply.
+        // Since the api failed and can no longer be retried, return error reply.
         ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
     }
-
 }
 
-void NfsClient::lookupWithContext(NfsApiContextParentName* ctx) {
+void NfsClient::lookupWithContext(NfsApiContextParentName* ctx)
+{
     bool rpcRetry = false;
     auto parent = ctx->getParent();
 
@@ -238,11 +200,13 @@ static void createFileCallback(
     auto res = (CREATE3res*)data;
     bool retry;
 
-    if (ctx->succeeded(rpc_status, RSTATUS(res), retry, false)) {
+    if (ctx->succeeded(rpc_status, RSTATUS(res), retry, false))
+    {
         assert(
             res->CREATE3res_u.resok.obj.handle_follows &&
             res->CREATE3res_u.resok.obj_attributes.attributes_follow);
-        ctx->getClient()->replyEntry(
+
+	ctx->getClient()->replyEntry(
 	    ctx,
             &res->CREATE3res_u.resok.obj.post_op_fh3_u.handle,
             &res->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes,
@@ -254,7 +218,7 @@ static void createFileCallback(
     }
     else
     {
-	// Since the api failed and can no longer be retried, retrun error reply.
+	// Since the api failed and can no longer be retried, return error reply.
 	ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
     }
 
@@ -280,7 +244,6 @@ void NfsClient::createFileWithContext(NfsCreateApiContext* ctx)
             // and not due to an actual error, hence retry.
             rpcRetry = true;
         }
-
     }  while (rpcRetry);
 }
 
@@ -303,7 +266,8 @@ static void setattrCallback(
     struct rpc_context* /* rpc */,
     int rpc_status,
     void* data,
-    void* private_data) {
+    void* private_data)
+{
     auto ctx = (NfsSetattrApiContext*)private_data;
     auto res = (SETATTR3res*)data;
     bool retry;
@@ -311,7 +275,8 @@ static void setattrCallback(
     if (ctx->succeeded(rpc_status, RSTATUS(res), retry))
     {
         assert(res->SETATTR3res_u.resok.obj_wcc.after.attributes_follow);
-        struct stat st;
+
+	struct stat st;
         ctx->getClient()->stat_from_fattr3(
             &st, &res->SETATTR3res_u.resok.obj_wcc.after.post_op_attr_u.attributes);
         ctx->replyAttr(&st, 60 /* TODO: Set reasonable value NfsClient::getAttrTimeout() */);
@@ -322,7 +287,7 @@ static void setattrCallback(
     }
     else
     {
-        // Since the api failed and can no longer be retried, retrun error reply.
+        // Since the api failed and can no longer be retried, return error reply.
         ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
     }
 }
@@ -423,6 +388,52 @@ void NfsClient::setattr(
     setattrWithContext(ctx);
 }
 
+//
+// Creates a new inode for the given fh and passes it to fuse_reply_entry().
+// This will be called by the APIs which much return a filehandle back to the client
+// like lookup, create etc.
+//
+void NfsClient::replyEntry(
+    NfsApiContext* ctx,
+    const nfs_fh3* fh,
+    const struct fattr3* attr,
+    const struct fuse_file_info* file)
+{
+    NFSFileHandle* filehandle;
+    
+    if (fh)
+    {
+	// TODO: When should this be freed? This should be freed when the ino is freed,
+	// 	 but decide when should that be done?
+        filehandle = new NFSFileHandle(fh);
+        filehandle->SetInode((fuse_ino_t)filehandle);
+    }
+    else
+    {
+        filehandle = nullptr;
+    }
+
+    fuse_entry_param entry;
+    memset(&entry, 0, sizeof(entry));
+
+    stat_from_fattr3(&entry.attr, attr);
+    entry.ino = (fuse_ino_t)(uintptr_t)filehandle;
+
+    /*
+     * TODO: Set the timeout to better value.
+     */
+    entry.attr_timeout = 60; //attrTimeout;
+    entry.entry_timeout = 60; //attrTimeout;
+
+    if (file)
+    {
+        ctx->replyCreate(&entry, file);
+    }
+    else
+    {
+        ctx->replyEntry(&entry);
+    }
+}
 
 // Translate a NFS fattr3 into struct stat.
 void NfsClient::stat_from_fattr3(struct stat* st, const struct fattr3* attr)
@@ -469,5 +480,3 @@ void NfsClient::stat_from_fattr3(struct stat* st, const struct fattr3* attr)
         break;
     }
 }
-
-

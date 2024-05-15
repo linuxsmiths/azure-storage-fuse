@@ -5,13 +5,12 @@
 //
 // This is the actual transport class.
 // This class is responsible for sending the requests out on the connections.
-// This has a vector of NfsConnection onjects on which the request will be sent out.
+// This has a vector of NfsConnection objects on which the request will be sent out.
 // If the mount is done with nconnect=x, then this layer will take care of round robining the
 // requests over x connections.
 //
 class RPCTransport
 {
-
     // This contains all the information needed to create connection to the server.
     struct mountOptions* mntOptions;
 
@@ -26,12 +25,6 @@ class RPCTransport
     // Note: Each context is identified from 0 to X (where X is the value of nconnect)
     //
     static int last_context;
-
-    // Track number of retries for NFS errors
-    unsigned errnoRetries;
-
-    // Maximum number of times to retry
-    static unsigned maxErrnoRetries;
 
     // Make the constructor private as it is singleton.
     RPCTransport(struct mountOptions* mountOptions):
@@ -91,14 +84,6 @@ public:
 
         nfsConnections.clear();
     }
-
-
-    // Set max num of retries
-    void SetRPCMaxRetries(int maxRetries);
-
-    // Check if the nfs error returned should be retried.
-    // The RPC should be retried if the error retruned from the server is a retriable error.
-    bool isRetryableError(int nfs_status);
 
     //
     // This is used to Get the connection on which the NFSClient associated with this transport can send the NFS request.

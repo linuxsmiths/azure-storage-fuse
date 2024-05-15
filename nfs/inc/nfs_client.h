@@ -14,7 +14,7 @@ class NfsSetattrApiContext;
 
 extern "C" {
     // libnfs does not offer a prototype for this in any public header,
-    // but mercifully exports it anyway.
+    // but exports it anyway.
     const struct nfs_fh3* nfs_get_rootfh(struct nfs_context* nfs);
 }
 
@@ -23,7 +23,7 @@ extern "C" {
 // This is a singleton class.
 // The user should first init the class by calling NfsClient::Init() by specifying all the parameters needed to mount the filesystem.
 // Once this is done, all the callers can get an instance of this class by calling the GetInstance() method.
-// This instance can then be used to cal the APIs like getattr, write etc.
+// This instance can then be used to call the APIs like getattr, write etc.
 //
 class NfsClient
 {
@@ -51,7 +51,7 @@ private:
 
     //
     // File handle obtained after mounting the filesystem.
-    // This will be set after calling nfs_mount.
+    // This will be set after calling nfs_mount which is done in the Init() method.
     //
     static NFSFileHandle* rootFh;
 
@@ -59,6 +59,12 @@ private:
     // The transport object responsible for actually sending out the requests to the server.
     //
     static RPCTransport* transport;
+
+    // Holds info about the server.
+    struct NfsServerInfo* serverInfo;
+
+    // Contains info of the server stat.
+    struct NfsServerStat* serverStat;
 
     //
     // This will be set to true if the NfsClient is init'd.
@@ -82,7 +88,6 @@ private:
     }
 
 public:
-
     static NfsClient& GetInstanceImpl(std::string* acctName = nullptr,
                                       std::string* contName = nullptr,
                                       std::string* blobSuffix = nullptr,
@@ -116,7 +121,7 @@ public:
     //
     // Get the nfs context on which the libnfs API calls can be made.
     //
-    struct nfs_context* GetNfsContext()
+    struct nfs_context* GetNfsContext() const
     {
         return transport->GetNfsContext();
     }
@@ -126,7 +131,7 @@ public:
     // Hence by just dereferencing this structure we will be able to get the filehandle.
     // This filehandle will remain valid till the ino is freeed by calling the free API.
     // TODO: See when the free API should be called.
-    // /
+    //
     NFSFileHandle* GetFhFromInode(fuse_ino_t ino)
     {
         if (ino == 1 /*FUSE_ROOT_ID*/)
@@ -144,7 +149,10 @@ public:
 
     void getattrWithContext(NfsApiContextInode* ctx);
 
-    void getattr(fuse_req_t req, fuse_ino_t inode, struct fuse_file_info* file);
+    void getattr(
+        fuse_req_t req,
+        fuse_ino_t inode,
+        struct fuse_file_info* file);
 
     void createFileWithContext(NfsCreateApiContext* ctx);
 
@@ -166,7 +174,10 @@ public:
 
     void lookupWithContext(NfsApiContextParentName* ctx);
 
-    void lookup(fuse_req_t req, fuse_ino_t parent, const char* name);
+    void lookup(
+        fuse_req_t req,
+        fuse_ino_t parent,
+        const char* name);
 
     static void stat_from_fattr3(struct stat* st, const struct fattr3* attr);
 
@@ -175,12 +186,4 @@ public:
         const nfs_fh3* fh,
         const struct fattr3* attr,
         const struct fuse_file_info* file);
-
-    // TODO: This should be modified to handle max retrues
-    bool shouldRetry(int rpc_status, NfsApiContext* ctx) {
-        if (rpc_status != RPC_STATUS_SUCCESS) {
-            return true;
-        }
-        return false;
-    }
 };

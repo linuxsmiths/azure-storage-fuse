@@ -60,7 +60,7 @@ struct aznfsc_cfg
     // Max number of times the API will be retried before erroring out.
     int maxNumOfRetries;
 
-    // Maximum tim ethat the API call waits before returning a timeout to the caller.
+    // Maximum time the API call waits before returning a timeout to the caller.
     uint64_t timeoutInSec;
 
     // Maximum size of read request.
@@ -69,7 +69,7 @@ struct aznfsc_cfg
     // Maximum size of write request.
     size_t writemax;
 
-    // Number of times the request will be retransimitted to the server when no response is received.
+    // Number of times the request will be retransmitted to the server when no response is received.
     int retrans;
 
     // Maximum number of readdir entries that can be requested.
@@ -81,7 +81,6 @@ struct aznfsc_cfg
      * - Add perf related config,
      *   e.g., amount of RAM used for staging writes, etc.
      */
-
 
     // Populate default values in the constructor which can be overwritten later.
     aznfsc_cfg():
@@ -102,7 +101,6 @@ struct aznfsc_cfg
         cloud_suffix = new char[strlen("blob.core.windows.net") + 1]; // +1 for null terminator
         strcpy(cloud_suffix, "blob.core.windows.net");
     }
-
 } aznfsc_cfg;
 
 #define AZNFSC_OPT(templ, key) { templ, offsetof(struct aznfsc_cfg, key), 0}
@@ -142,7 +140,6 @@ bool parseConfigFile(const char* configFile)
         {
             aznfsc_cfg.account = strdup(config["account"].as<std::string>().c_str());
         }
-
         if (aznfsc_cfg.container == nullptr && config["container"])
         {
             aznfsc_cfg.container = strdup(config["container"].as<std::string>().c_str());
@@ -187,7 +184,6 @@ bool parseConfigFile(const char* configFile)
         {
             aznfsc_cfg.readdir_maxcount = config["readdir_maxcount"].as<uint32_t>();
         }
-
     } catch (const YAML::BadFile& e) {
         AZLogError("Error loading file: {}, error: {}", configFile, e.what());
         return false;
@@ -233,13 +229,7 @@ static void aznfsc_ll_lookup(fuse_req_t req,
     AZLogInfo("aznfsc_ll_lookup file: {}", name);
 
     NfsClient& nfsclient = NfsClient::GetInstance();
-
     nfsclient.lookup(req, parent, name);
-
-    /*
-     * TODO: Fill me.
-     */
-    //fuse_reply_err(req, ENOSYS);
 }
 
 static void aznfsc_ll_forget(fuse_req_t req,
@@ -260,11 +250,6 @@ static void aznfsc_ll_getattr(fuse_req_t req,
     AZLogInfo("Getattr called");
 
     NfsClient& nfsclient = NfsClient::GetInstance();
-
-    /*
-     * This will make the GetAttr call to the server and will laso take care of sending the respone
-     * back to the caller.
-     */
     nfsclient.getattr(req, ino, fi);
 }
 
@@ -277,7 +262,6 @@ static void aznfsc_ll_setattr(fuse_req_t req,
     AZLogInfo("Setattr called");
 
     NfsClient& nfsclient = NfsClient::GetInstance();
-
     nfsclient.setattr(req, ino, attr, to_set, fi);
 }
 
@@ -547,16 +531,10 @@ static void aznfsc_ll_create(fuse_req_t req,
                              mode_t mode,
                              struct fuse_file_info *fi)
 {
-    AZLogInfo("aznfsc_ll_create: Creating file: {}", name);
+    AZLogInfo("Creating file: {}", name);
 
     NfsClient& nfsclient = NfsClient::GetInstance();
     nfsclient.create(req, parent, name, mode, fi);
-
-
-    /*
-     * TODO: Fill me.
-     */
-    //fuse_reply_err(req, ENOSYS);
 }
 
 static void aznfsc_ll_getlk(fuse_req_t req,
@@ -794,7 +772,7 @@ int main(int argc, char *argv[])
               AZNFSCLIENT_VERSION_PATCH);
 
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-#if 0
+
     /*
      * First parse the options from the config file if that is present.
      * We should do this before we parse the command line options since the latter should take higher priority.
@@ -811,11 +789,11 @@ int main(int argc, char *argv[])
 
     if (configFile != nullptr)
     {
-        //AZLogInfo("Parsing the config file {}", configFile);
+        AZLogInfo ("Parsing the config file {}", configFile);
         parseConfigFile(configFile);
         free(configFile);
     }
-#endif
+    
     struct fuse_session *se;
     struct fuse_cmdline_opts opts;
     struct fuse_loop_config loop_config;
@@ -855,7 +833,6 @@ int main(int argc, char *argv[])
     }
 
     se = fuse_session_new(&args, &aznfsc_ll_ops, sizeof(aznfsc_ll_ops), NULL);
-
     if (se == NULL) {
         goto err_out1;
     }
@@ -894,10 +871,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    // TODO: Just setting for testing, remove it.
-    opts.foreground = true;
     fuse_daemonize(opts.foreground);
+
     /* Block until ctrl+c or fusermount -u */
+    printf("singlethread: %d\n", opts.singlethread);
 
     if (opts.singlethread) {
         ret = fuse_session_loop(se);

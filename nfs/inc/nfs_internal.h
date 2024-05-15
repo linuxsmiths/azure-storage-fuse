@@ -7,7 +7,7 @@ struct mountOptions
     // Server address: account+"."+cloud_suffix
     std::string server;
 
-    // /account/container
+    // Path to be exported. /account/container
     std::string exportPath;
 
     // Defaults to version 3
@@ -87,17 +87,6 @@ struct mountOptions
         return nfsPort;
     }
 };
-
-// Get unique serial # from a fuse request.
-//
-// fuse_req is deliberately opaque, so this is a gross hack
-// to return the second 64-bit field in the req, which happens
-// to be the serial #.
-// TODO: See if we need this.
-//
-inline uint64_t fuse_get_unique(const struct fuse_req* req) {
-    return ((const uint64_t *)req)[1];
-}
 
 // This structure contains all the server related info returned by the Fsinfo call.
 struct NfsServerInfo

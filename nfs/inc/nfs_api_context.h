@@ -5,7 +5,6 @@
 class NfsApiContext
 {
 private:
-
     // The client for which the context is created.
     NfsClient* client;
 
@@ -18,18 +17,16 @@ private:
 
     int numOfTimesRetried;
 
-
 protected:
     // Operation type. This is used only for logging.
     enum fuse_optype optype;
 
 public:
-
-    NfsApiContext(NfsClient* _client, struct fuse_req* _req, enum fuse_optype _optype):
-        client(_client),
-        req(_req),
+    NfsApiContext(NfsClient* clnt, struct fuse_req* freq, enum fuse_optype opType):
+        client(clnt),
+        req(freq),
         numOfTimesRetried(0),
-        optype(_optype)
+        optype(opType)
     {}
 
     virtual ~NfsApiContext() {};
@@ -66,6 +63,31 @@ public:
         delete this;
     }
 
+    void replyAttr(const struct stat* attr, double attr_timeout)
+    {
+        fuse_reply_attr(req, attr, attr_timeout);
+        delete this;
+    }
+
+    void replyWrite(size_t count)
+    {
+        fuse_reply_write(req, count);
+        delete this;
+    }
+
+    void replyEntry(const struct fuse_entry_param* e)
+    {
+        fuse_reply_entry(req, e);
+        delete this;
+    }
+
+    void replyCreate(
+        const struct fuse_entry_param* entry,
+        const struct fuse_file_info* file)
+    {
+        fuse_reply_create(req, entry, file);
+        delete this;
+    }
 
     //
     // Check RPC completion for success.
@@ -84,7 +106,6 @@ public:
         if (rpc_status != RPC_STATUS_SUCCESS && (numOfTimesRetried < getMaxErrnoRetries()))
         {
             retry = true;
-
             return false;
         }
 
@@ -94,7 +115,6 @@ public:
             {
                 numOfTimesRetried++;
                 retry = true;
-
                 return false;
             }
 
@@ -121,33 +141,6 @@ public:
         default:
             return false;
         }
-    }
-
-    // This is called to send reply of getattr request.
-    void replyAttr(const struct stat* attr, double attr_timeout)
-    {
-        fuse_reply_attr(req, attr, attr_timeout);
-        delete this;
-    }
-
-    void replyWrite(size_t count)
-    {
-        fuse_reply_write(req, count);
-        delete this;
-    }
-
-    void replyEntry(const struct fuse_entry_param* e)
-    {
-        fuse_reply_entry(req, e);
-        delete this;
-    }
-
-    void replyCreate(
-        const struct fuse_entry_param* entry,
-        const struct fuse_file_info* file)
-    {
-        fuse_reply_create(req, entry, file);
-        delete this;
     }
 
     struct fuse_req* getReq() const
@@ -253,7 +246,6 @@ private:
     mode_t mode;
 
     struct fuse_file_info file;
-    // TODO: See if we really need filePtr
     struct fuse_file_info* filePtr;
 };
 

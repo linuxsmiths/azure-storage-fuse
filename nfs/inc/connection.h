@@ -7,7 +7,6 @@
 class NfsConnection
 {
 private:
-
     // The mount options struct which has info of the server and export to connect to.
     struct mountOptions* mntOptions;
 
@@ -17,9 +16,7 @@ private:
      */
     struct nfs_context* nfsContext;
 
-
 public:
-
     NfsConnection(struct mountOptions* mntOpt):
         mntOptions(mntOpt)
     {
@@ -29,7 +26,6 @@ public:
     {
         //We will not close the connection, we expect the caller to close this.
     }
-
 
     struct nfs_context* GetNfsContext()
     {
@@ -83,7 +79,6 @@ public:
         return true;
     }
 
-
     // Close the connections to the server and clean up the structure.
     void close()
     {
@@ -91,5 +86,3 @@ public:
         nfs_destroy_context(nfsContext);
     }
 };
-
-

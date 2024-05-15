@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <assert.h>
 
-#define _FILE_OFFSET_BITS 64
 #define FUSE_USE_VERSION 35
 #include <fuse3/fuse_lowlevel.h>
 #include <fuse3/fuse.h>
