@@ -9,6 +9,8 @@
 class NfsApiContext;
 class NfsApiContextParentName;
 class NfsApiContextInode;
+class NfsCreateApiContext;
+class NfsSetattrApiContext;
 
 extern "C" {
     // libnfs does not offer a prototype for this in any public header,
@@ -139,20 +141,40 @@ public:
     // Define Nfsv3 APi specific functions and helpers after this point.
     // TODO: For now I have just added the methods needed for few calls, add more going forward.
     //
-    static void stat_from_fattr3(struct stat* st, const struct fattr3* attr);
 
     void getattrWithContext(NfsApiContextInode* ctx);
 
     void getattr(fuse_req_t req, fuse_ino_t inode, struct fuse_file_info* file);
 
+    void createFileWithContext(NfsCreateApiContext* ctx);
+
+    void create(
+        fuse_req_t req,
+        fuse_ino_t parent,
+        const char* name,
+        mode_t mode,
+        struct fuse_file_info* file);
+
+    void setattrWithContext(NfsSetattrApiContext* ctx);
+
+    void setattr(
+        fuse_req_t req,
+        fuse_ino_t inode,
+        struct stat* attr,
+        int toSet,
+        struct fuse_file_info* file);
+
+    void lookupWithContext(NfsApiContextParentName* ctx);
+
+    void lookup(fuse_req_t req, fuse_ino_t parent, const char* name);
+
+    static void stat_from_fattr3(struct stat* st, const struct fattr3* attr);
+
     void replyEntry(
         NfsApiContext* ctx,
         const nfs_fh3* fh,
         const struct fattr3* attr,
-        const struct fuse_file_info* file,
-        const char* caller,
-        fuse_ino_t parent,
-        const char* name);
+        const struct fuse_file_info* file);
 
     // TODO: This should be modified to handle max retrues
     bool shouldRetry(int rpc_status, NfsApiContext* ctx) {
@@ -161,15 +183,4 @@ public:
         }
         return false;
     }
-
-    void lookupWithContext(NfsApiContextParentName* ctx);
-
-    void lookup(fuse_req_t req, fuse_ino_t parent, const char* name);
-
-    static void lookupCallback(
-        struct NfsApicontext*,
-        int rpc_status,
-        void* data,
-        void* private_data);
-
 };

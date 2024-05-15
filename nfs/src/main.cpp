@@ -230,19 +230,16 @@ static void aznfsc_ll_lookup(fuse_req_t req,
                              fuse_ino_t parent,
                              const char *name)
 {
-#if 0
-    AZLogInfo("lookup: name mod is {} parent is {}", name, parent);
+    AZLogInfo("aznfsc_ll_lookup file: {}", name);
 
     NfsClient& nfsclient = NfsClient::GetInstance();
 
     nfsclient.lookup(req, parent, name);
-#endif
-
 
     /*
      * TODO: Fill me.
      */
-    fuse_reply_err(req, ENOSYS);
+    //fuse_reply_err(req, ENOSYS);
 }
 
 static void aznfsc_ll_forget(fuse_req_t req,
@@ -274,13 +271,14 @@ static void aznfsc_ll_getattr(fuse_req_t req,
 static void aznfsc_ll_setattr(fuse_req_t req,
                               fuse_ino_t ino,
                               struct stat *attr,
-                              int to_set,
+                              int to_set /* bitmask indicating the attributes to set */,
                               struct fuse_file_info *fi)
 {
-    /*
-     * TODO: Fill me.
-     */
-    fuse_reply_err(req, ENOSYS);
+    AZLogInfo("Setattr called");
+
+    NfsClient& nfsclient = NfsClient::GetInstance();
+
+    nfsclient.setattr(req, ino, attr, to_set, fi);
 }
 
 static void aznfsc_ll_readlink(fuse_req_t req,
@@ -549,13 +547,16 @@ static void aznfsc_ll_create(fuse_req_t req,
                              mode_t mode,
                              struct fuse_file_info *fi)
 {
-    const char* nm = "amnTest";
-    AZLogInfo("amn: name is %s", nm);
+    AZLogInfo("aznfsc_ll_create: Creating file: {}", name);
+
+    NfsClient& nfsclient = NfsClient::GetInstance();
+    nfsclient.create(req, parent, name, mode, fi);
+
 
     /*
      * TODO: Fill me.
      */
-    fuse_reply_err(req, ENOSYS);
+    //fuse_reply_err(req, ENOSYS);
 }
 
 static void aznfsc_ll_getlk(fuse_req_t req,

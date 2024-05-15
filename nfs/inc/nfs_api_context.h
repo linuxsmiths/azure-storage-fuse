@@ -7,7 +7,6 @@ class NfsApiContext
 private:
 
     // The client for which the context is created.
-    // TODO: Since our client is a singleton class, see if we really need to hold this info here.
     NfsClient* client;
 
     // Fuse request structure.
@@ -61,119 +60,45 @@ public:
     }
 
     // This method will reply with error and delete the context object.
-    void replyError(int rc) {
-        if (rc) {
-            //logError(rc);
-        }
-
-#if 0
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu): %d\n", __func__, fuse_get_unique(req_), rc);
-#endif
-
+    void replyError(int rc)
+    {
         fuse_reply_err(req, rc);
         delete this;
     }
 
 
-    /// @brief Check RPC completion for success.
-    ///
-    /// On failure, retry is set true if the error is
-    /// retryable; on non-retryable error, the FUSE request
-    /// is completed in error and as a side effect, the
-    /// RpcContext object is destroyed.
+    //
+    // Check RPC completion for success.
+    //
+    // On success, true is returned.
+    // On failure, false is returned and \p retry is set to true if the error is retryable else set to false.
+    //
     bool succeeded(
         int rpc_status,
         int nfs_status,
         bool& retry,
         bool idempotent = true)
     {
-
         retry = false;
+
         if (rpc_status != RPC_STATUS_SUCCESS && (numOfTimesRetried < getMaxErrnoRetries()))
         {
-
-#if 0
-            client_->getLogger()->LOG_MSG(
-                LOG_WARNING,
-                "%s: RPC status %d (%lu).\n",
-                conn_->describe().c_str(),
-                rpc_status,
-                fuse_get_unique(req_));
-#endif
-
-            // TODO: Should we check here only if the API has exhausted the max possible retries??
             retry = true;
+
             return false;
         }
-
-#if 0
-        if (client_->errorInjection() && idempotent && (numOfTimesRetried < getMaxErrnoRetries())) {
-            client_->getLogger()->LOG_MSG(
-                LOG_DEBUG,
-                "%s: simulating failure for %lu.\n",
-                __func__,
-                fuse_get_unique(req_));
-            failConnection();
-            retry = true;
-            return false;
-        }
-
-        if (client_->errorInjection() && idempotent) {
-            // TODO Inject more random errors
-            nfs_status = NFS3ERR_ROFS;
-        }
-#endif
 
         if (nfs_status != NFS3_OK)
         {
             if (idempotent && (numOfTimesRetried < getMaxErrnoRetries()) && isRetryableError(nfs_status))
             {
                 numOfTimesRetried++;
-
-#if 0
-                client_->getLogger()->LOG_MSG(
-                    LOG_INFO,
-                    "%s: Retrying request %lu (attempt %u/%u).\n",
-                    __func__,
-                    fuse_get_unique(req_),
-                    numOfTimesRetried,
-                    getMaxErrnoRetries());
-#endif
-
                 retry = true;
+
                 return false;
             }
-            else
-            {
-                if (idempotent && numOfTimesRetried >= getMaxErrnoRetries())
-                {
-#if 0
-                    client_->getLogger()->LOG_MSG(
-                        LOG_INFO,
-                        "%s: Max retry attempts reached, failing operation (%u/%u).\n",
-                        __func__,
-                        numOfTimesRetried,
-                        getMaxErrnoRetries());
-#endif
-                }
-                else if (idempotent && !isRetryableError(nfs_status))
-                {
-#if 0
-                    client_->getLogger()->LOG_MSG(
-                        LOG_INFO,
-                        "%s: Error #%d is not retryable.\n",
-                        __func__,
-                        nfs_status);
-#endif
-                }
-            }
 
-            // This will send an error response and will delete the context object.
-            // hence the caller should not be accessing this object after this point.
-            // TODO: See if this function should be offloaded to the caller.
-            replyError(-nfsstat3_to_errno(nfs_status));
-            return false; // error occurred.
+            return false;
         }
 
         return true; // success.
@@ -205,8 +130,6 @@ public:
         delete this;
     }
 
-    // This should also contain all the methods needed to send reply back to the client as we use low level fuse API calls.
-    // Just adding the write method now, other methods should be added.
     void replyWrite(size_t count)
     {
         fuse_reply_write(req, count);
@@ -215,86 +138,28 @@ public:
 
     void replyEntry(const struct fuse_entry_param* e)
     {
-
-        //client_->getLogger()->LOG_MSG(
-        //  LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-
         fuse_reply_entry(req, e);
         delete this;
     }
 
-
-
-#if 0 // Move these methods out as and when you implement them.
-
-    virtual void replyBuf(const void* buf, size_t size) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu): %lu\n", __func__, fuse_get_unique(req_), size);
-        fuse_reply_buf(req_, (const char*)buf, size);
-        delete this;
-    }
-
-    void replyEntry(const struct fuse_entry_param* e) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-        fuse_reply_entry(req_, e);
-        delete this;
-    }
-
     void replyCreate(
-        const struct fuse_entry_param* e,
-        const struct fuse_file_info* f) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-        fuse_reply_create(req_, e, f);
+        const struct fuse_entry_param* entry,
+        const struct fuse_file_info* file)
+    {
+        fuse_reply_create(req, entry, file);
         delete this;
     }
 
-    void replyOpen(const struct fuse_file_info* f) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-        fuse_reply_open(req_, f);
-        delete this;
-    }
-
-
-    void replyWrite(size_t count) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu): %lu\n", __func__, fuse_get_unique(req_), count);
-        fuse_reply_write(req_, count);
-        delete this;
-    }
-
-    void replyReadlink(const char* linkname) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu): %s\n", __func__, fuse_get_unique(req_), linkname);
-        fuse_reply_readlink(req_, linkname);
-        delete this;
-    }
-
-    void replyStatfs(const struct statvfs* stbuf) {
-        finishOperation();
-        client_->getLogger()->LOG_MSG(
-            LOG_DEBUG, "%s(%lu)\n", __func__, fuse_get_unique(req_));
-        fuse_reply_statfs(req_, stbuf);
-        delete this;
-    }
-
-#endif
-
-    struct fuse_req* getReq() const {
+    struct fuse_req* getReq() const
+    {
         return req;
     }
 };
 
-/// @brief base class for operations which take an inode.
-class NfsApiContextInode :  public NfsApiContext
+//
+// This can be used for Nfsv3 APIs that take inode as a parameter.
+//
+class NfsApiContextInode:  public NfsApiContext
 {
 public:
     NfsApiContextInode(
@@ -315,9 +180,7 @@ private:
     fuse_ino_t inode;
 };
 
-
-
-/// @brief base class for operations which take a parent inode and a name.
+// This can be used for Nfsv3 APIs that takes file name and parent inode as a parameter.
 class NfsApiContextParentName : public NfsApiContext {
 public:
     NfsApiContextParentName(
@@ -332,7 +195,7 @@ public:
         fileName = ::strdup(name);
     }
 
-    ~NfsApiContextParentName() override
+    ~NfsApiContextParentName()
     {
         ::free((void*)fileName);
     }
@@ -350,6 +213,109 @@ public:
 private:
     fuse_ino_t parentIno;
     const char* fileName;
+};
+
+// This is the context that will be used by the Nfsv3 Create API.
+class NfsCreateApiContext : public NfsApiContextParentName
+{
+public:
+    NfsCreateApiContext(
+        NfsClient* client,
+        struct fuse_req* req,
+        enum fuse_optype optype,
+        fuse_ino_t parent,
+        const char* name,
+        mode_t createmode,
+        struct fuse_file_info* fileinfo)
+        : NfsApiContextParentName(client, req, optype, parent, name)
+    {
+        mode = createmode;
+
+        if (fileinfo) {
+            ::memcpy(&file, fileinfo, sizeof(file));
+            filePtr = &file;
+        } else {
+            filePtr = nullptr;
+        }
+    }
+
+    mode_t getMode() const
+    {
+        return mode;
+    }
+
+    struct fuse_file_info* getFile() const
+    {
+        return filePtr;
+    }
+
+private:
+    mode_t mode;
+
+    struct fuse_file_info file;
+    // TODO: See if we really need filePtr
+    struct fuse_file_info* filePtr;
+};
+
+// This can be used for Nfsv3 APIs that takes file and inode as parameters.
+class NfsApiContextInodeFile : public NfsApiContextInode
+{
+public:
+    NfsApiContextInodeFile(
+        NfsClient* client,
+        struct fuse_req* req,
+        enum fuse_optype optype,
+        fuse_ino_t inode,
+        fuse_file_info* fileinfo)
+        : NfsApiContextInode(client, req, optype, inode) {
+        if (fileinfo) {
+            ::memcpy(&file, fileinfo, sizeof(file));
+            filePtr = &file;
+        } else {
+            filePtr = nullptr;
+        }
+    }
+
+    fuse_file_info* getFile() const
+    {
+        return filePtr;
+    }
+
+private:
+    fuse_file_info file;
+    fuse_file_info* filePtr;
+};
+
+// This is the context that will be used by the Nfsv3 Setattr API
+class NfsSetattrApiContext: public NfsApiContextInodeFile {
+public:
+    NfsSetattrApiContext(
+        NfsClient* client,
+        struct fuse_req* req,
+        enum fuse_optype optype,
+        fuse_ino_t inode,
+        struct stat* attribute,
+        int toSet,
+        struct fuse_file_info* file)
+        : NfsApiContextInodeFile(client, req, optype, inode, file) {
+        attr = attribute;
+        to_set = toSet;
+    }
+
+    struct stat* getAttr() const
+    {
+        return attr;
+    }
+
+    int getAttrFlagsToSet() const
+    {
+        return to_set;
+    }
+
+private:
+    struct stat* attr;
+    // Valid attribute mask to be set.
+    int to_set;
 };
 
 int NfsApiContext::maxErrnoRetries(3);

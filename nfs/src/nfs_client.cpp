@@ -66,9 +66,15 @@ static void getattrCallback(
 
         // TODO: Set the Attr timeout to a better value.
         ctx->replyAttr(&st, 60/*getAttrTimeout()*/);
-    } else if (retry)
+    }
+    else if (retry)
     {
         ctx->getClient()->getattrWithContext(ctx);
+    }
+    else
+    {
+        // Since the api failed and can no longer be retried, retrun error reply.
+        ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
     }
 }
 
@@ -96,73 +102,54 @@ void NfsClient::getattr(
     fuse_ino_t inode,
     struct fuse_file_info* file)
 {
-    // TODO: We do not need the file parameter here. Understand why this is being passed.
+    //
+    // The context created here will be freed at the time response is sent to the client.
+    // In this case it will be freed in replyError() or replyAttr().
+    //
     auto ctx = new NfsApiContextInode(this, req, FOPTYPE_GETATTR, inode);
     getattrWithContext(ctx);
 }
 
-/// @brief add a new inode for the given fh and pass to fuse_reply_entry().
+// Creates a new inode for the given fh and passes it to fuse_reply_entry().
 void NfsClient::replyEntry(
     NfsApiContext* ctx,
     const nfs_fh3* fh,
     const struct fattr3* attr,
-    const struct fuse_file_info* file,
-    // following parameters are purely for debugs.
-    const char* caller = nullptr,
-    fuse_ino_t parent = 0,
-    const char* name = nullptr)
+    const struct fuse_file_info* file)
 {
 
-    NFSFileHandle* ii;
+    NFSFileHandle* filehandle;
     if (fh) {
-        ii = new NFSFileHandle(fh);
-        ii->SetInode((fuse_ino_t)ii);
+        filehandle = new NFSFileHandle(fh);
+        filehandle->SetInode((fuse_ino_t)filehandle);
     } else {
-        ii = nullptr;
+        filehandle = nullptr;
     }
 
-#if 0
-    if (caller && name) {
-        ctx->getClient()->getLogger()->LOG_MSG(
-            LOG_DEBUG,
-            "%s allocated new inode %p for %lu+%s.\n",
-            caller,
-            ii,
-            parent,
-            name);
-    }
-#endif
+    fuse_entry_param entry;
+    memset(&entry, 0, sizeof(entry));
 
-    fuse_entry_param e;
-    memset(&e, 0, sizeof(e));
-    stat_from_fattr3(&e.attr, attr);
-    e.ino = (fuse_ino_t)(uintptr_t)ii;
+    stat_from_fattr3(&entry.attr, attr);
+    entry.ino = (fuse_ino_t)(uintptr_t)filehandle;
+
     /*
-     * TODO: See if we need this.
-        e.attr_timeout = attrTimeout;
-        e.entry_timeout = attrTimeout;
-    */
-    if (file) {
-        //ctx->replyCreate(&e, file);
-    } else {
-        ctx->replyEntry(&e);
+     * TODO: Set the timeout to better value.
+     */
+    entry.attr_timeout = 60; //attrTimeout;
+    entry.entry_timeout = 60; //attrTimeout;
+
+    if (file)
+    {
+        ctx->replyCreate(&entry, file);
+    }
+    else
+    {
+        ctx->replyEntry(&entry);
     }
 }
 
-#define REPLY_ENTRY(fh, attr, file) \
-  ctx->getClient()->replyEntry(     \
-      ctx,                          \
-      &(fh),                        \
-      &(attr),                      \
-      (file),                       \
-      __func__,                     \
-      ctx->getParent(),             \
-      ctx->getName())
-
-
-
-void NfsClient::lookupCallback(
-    struct NfsApicontext* apiContext,
+static void lookupCallback(
+    struct rpc_context* /* rpc */,
     int rpc_status,
     void* data,
     void* private_data) {
@@ -170,68 +157,276 @@ void NfsClient::lookupCallback(
     auto res = (LOOKUP3res*)data;
     bool retry;
 
-    if (rpc_status == RPC_STATUS_SUCCESS && RSTATUS(res) == NFS3ERR_NOENT) {
-        // Magic special case for fuse: if we want negative cache, we
-        // must not return ENOENT, must instead return success with zero inode.
+    if (rpc_status == RPC_STATUS_SUCCESS && RSTATUS(res) == NFS3ERR_NOENT)
+    {
         //
-        // See comments in definition of fuse_entry_param in fuse header.
+        // Special case for fuse: A "negative entry" refers to an entry that doesn't exist
+        // in the file system. If we want negative cache, we must not return ENOENT,
+        // instead we should return success with zero inode.
+        // When the FUSE kernel module receives a negative entry response, it may cache this
+        // information for a certain duration specified by the entry_timeout parameter.
+        // This caching helps to improve performance by avoiding repeated lookup requests
+        // for entries that are known not to exist.
+        //
         struct fattr3 dummyAttr;
         ::memset(&dummyAttr, 0, sizeof(dummyAttr));
-#if 0
-        ctx->getClient()->getLogger()->LOG_MSG(
-            LOG_DEBUG,
-            "Negative caching failed lookup req (%lu).\n",
-            fuse_get_unique(ctx->getReq()));
-#endif
 
         ctx->getClient()->replyEntry(
             ctx,
             nullptr /* fh */,
-            // &res->LOOKUP3res_u.resok.obj_attributes.post_op_attr_u.attributes,
             &dummyAttr,
-            nullptr, /* file */
-            __func__,
-            ctx->getParent(),
-            ctx->getName());
-    } else if (ctx->succeeded(rpc_status, RSTATUS(res), retry)) {
+	    nullptr);
+    }
+    else if(ctx->succeeded(rpc_status, RSTATUS(res), retry))
+    {
         assert(res->LOOKUP3res_u.resok.obj_attributes.attributes_follow);
 
-        REPLY_ENTRY(
-            res->LOOKUP3res_u.resok.object,
-            res->LOOKUP3res_u.resok.obj_attributes.post_op_attr_u.attributes,
+        ctx->getClient()->replyEntry(
+	    ctx,
+            &res->LOOKUP3res_u.resok.object,
+            &res->LOOKUP3res_u.resok.obj_attributes.post_op_attr_u.attributes,
             nullptr);
-    } else if (retry) {
+    }
+    else if(retry)
+    {
         ctx->getClient()->lookupWithContext(ctx);
     }
+    else
+    {
+        // Since the api failed and can no longer be retried, retrun error reply.
+        ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
+    }
+
 }
 
 void NfsClient::lookupWithContext(NfsApiContextParentName* ctx) {
-    int rpc_status = RPC_STATUS_ERROR;
+    bool rpcRetry = false;
     auto parent = ctx->getParent();
+
     do {
         LOOKUP3args args;
         ::memset(&args, 0, sizeof(args));
         args.what.dir = GetFhFromInode(parent)->GetFh();
         args.what.name = (char*)ctx->getName();
 
-        //  if (ctx->obtainConnection()) {
-        //setUidGid(*ctx, false);
-        //  rpc_status = rpc_nfs3_lookup_async(
-        //     ctx->GetNfsContext(), this->lookupCallback, &args, ctx);
-
-        //  restoreUidGid(*ctx, false);
-        //ctx->unlockConnection();
-        //}
-    } while (shouldRetry(rpc_status, ctx));
+        if (rpc_nfs3_lookup_task(ctx->GetRpcCtx(), lookupCallback, &args, ctx) == NULL)
+        {
+            // This call fails due to internal issues like OOM etc
+            // and not due to an actual error, hence retry.
+            rpcRetry = true;
+        }
+    } while (rpcRetry);
 }
 
-void NfsClient::lookup(fuse_req_t req, fuse_ino_t parent, const char* name) {
+void NfsClient::lookup(fuse_req_t req, fuse_ino_t parent, const char* name)
+{
+    //
+    // The context created here will be freed at the time response is sent to the client.
+    // In this case it will be freed in replyError() or replyEntry().
+    //
     auto ctx = new NfsApiContextParentName(this, req, FOPTYPE_LOOKUP, parent, name);
     lookupWithContext(ctx);
 }
 
-/// @brief translate a NFS fattr3 into struct stat.
-void NfsClient::stat_from_fattr3(struct stat* st, const struct fattr3* attr) {
+static void createFileCallback(
+    struct rpc_context* /* rpc */,
+    int rpc_status,
+    void* data,
+    void* private_data)
+{
+    auto ctx = (NfsCreateApiContext*)private_data;
+    auto res = (CREATE3res*)data;
+    bool retry;
+
+    if (ctx->succeeded(rpc_status, RSTATUS(res), retry, false)) {
+        assert(
+            res->CREATE3res_u.resok.obj.handle_follows &&
+            res->CREATE3res_u.resok.obj_attributes.attributes_follow);
+        ctx->getClient()->replyEntry(
+	    ctx,
+            &res->CREATE3res_u.resok.obj.post_op_fh3_u.handle,
+            &res->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes,
+            ctx->getFile());
+    }
+    else if (retry)
+    {
+        ctx->getClient()->createFileWithContext(ctx);
+    }
+    else
+    {
+	// Since the api failed and can no longer be retried, retrun error reply.
+	ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
+    }
+
+}
+
+void NfsClient::createFileWithContext(NfsCreateApiContext* ctx)
+{
+    bool rpcRetry = false;
+    auto parent = ctx->getParent();
+
+    do {
+        CREATE3args args;
+        ::memset(&args, 0, sizeof(args));
+        args.where.dir = GetFhFromInode(parent)->GetFh();
+        args.where.name = (char*)ctx->getName();
+        args.how.mode = (ctx->getFile()->flags & O_EXCL) ? GUARDED : UNCHECKED;
+        args.how.createhow3_u.obj_attributes.mode.set_it = 1;
+        args.how.createhow3_u.obj_attributes.mode.set_mode3_u.mode = ctx->getMode();
+
+        if (rpc_nfs3_create_task(ctx->GetRpcCtx(), createFileCallback, &args, ctx) == NULL)
+        {
+            // This call fails due to internal issues like OOM etc
+            // and not due to an actual error, hence retry.
+            rpcRetry = true;
+        }
+
+    }  while (rpcRetry);
+}
+
+void NfsClient::create(
+    fuse_req_t req,
+    fuse_ino_t parent,
+    const char* name,
+    mode_t mode,
+    struct fuse_file_info* file)
+{
+    //
+    // The context created here will be freed at the time response is sent to the client.
+    // In this case it will be freed in replyError() or replyEntry().
+    //
+    auto ctx = new NfsCreateApiContext(this, req, FOPTYPE_CREATE, parent, name, mode, file);
+    createFileWithContext(ctx);
+}
+
+static void setattrCallback(
+    struct rpc_context* /* rpc */,
+    int rpc_status,
+    void* data,
+    void* private_data) {
+    auto ctx = (NfsSetattrApiContext*)private_data;
+    auto res = (SETATTR3res*)data;
+    bool retry;
+
+    if (ctx->succeeded(rpc_status, RSTATUS(res), retry))
+    {
+        assert(res->SETATTR3res_u.resok.obj_wcc.after.attributes_follow);
+        struct stat st;
+        ctx->getClient()->stat_from_fattr3(
+            &st, &res->SETATTR3res_u.resok.obj_wcc.after.post_op_attr_u.attributes);
+        ctx->replyAttr(&st, 60 /* TODO: Set reasonable value NfsClient::getAttrTimeout() */);
+    }
+    else if (retry)
+    {
+        ctx->getClient()->setattrWithContext(ctx);
+    }
+    else
+    {
+        // Since the api failed and can no longer be retried, retrun error reply.
+        ctx->replyError(-nfsstat3_to_errno(RSTATUS(res)));
+    }
+}
+
+void NfsClient::setattrWithContext(NfsSetattrApiContext* ctx)
+{
+    auto inode = ctx->getInode();
+    auto attr = ctx->getAttr();
+    const int valid = ctx->getAttrFlagsToSet();
+    bool rpcRetry = false;
+
+    do {
+        SETATTR3args args;
+        ::memset(&args, 0, sizeof(args));
+        args.object = GetFhFromInode(inode)->GetFh();
+
+        if (valid & FUSE_SET_ATTR_SIZE) {
+            AZLogInfo("Setting size to {}", attr->st_size);
+
+            args.new_attributes.size.set_it = 1;
+            args.new_attributes.size.set_size3_u.size = attr->st_size;
+        }
+
+        if (valid & FUSE_SET_ATTR_MODE) {
+            AZLogInfo("Setting mode to {}", attr->st_mode);
+
+            args.new_attributes.mode.set_it = 1;
+            args.new_attributes.mode.set_mode3_u.mode = attr->st_mode;
+        }
+
+        if (valid & FUSE_SET_ATTR_UID) {
+            AZLogInfo("Setting uid to {}", attr->st_uid);
+            args.new_attributes.uid.set_it = 1;
+            args.new_attributes.uid.set_uid3_u.uid = attr->st_uid;
+        }
+
+        if (valid & FUSE_SET_ATTR_GID) {
+            AZLogInfo("Setting gid to {}", attr->st_gid);
+
+            args.new_attributes.gid.set_it = 1;
+            args.new_attributes.gid.set_gid3_u.gid = attr->st_gid;
+        }
+
+        if (valid & FUSE_SET_ATTR_ATIME) {
+            // TODO: These log are causing crash, look at it later.
+            // AZLogInfo("Setting atime to {}", attr->st_atim.tv_sec);
+
+            args.new_attributes.atime.set_it = SET_TO_CLIENT_TIME;
+            args.new_attributes.atime.set_atime_u.atime.seconds =
+                attr->st_atim.tv_sec;
+            args.new_attributes.atime.set_atime_u.atime.nseconds =
+                attr->st_atim.tv_nsec;
+        }
+
+        if (valid & FUSE_SET_ATTR_MTIME) {
+            // TODO: These log are causing crash, look at it later.
+            // AZLogInfo("Setting mtime to {}", attr->st_mtim.tv_sec);
+
+            args.new_attributes.mtime.set_it = SET_TO_CLIENT_TIME;
+            args.new_attributes.mtime.set_mtime_u.mtime.seconds =
+                attr->st_mtim.tv_sec;
+            args.new_attributes.mtime.set_mtime_u.mtime.nseconds =
+                attr->st_mtim.tv_nsec;
+        }
+
+        if (valid & FUSE_SET_ATTR_ATIME_NOW) {
+            AZLogInfo("Setting atime to now");
+            args.new_attributes.atime.set_it = SET_TO_SERVER_TIME;
+        }
+
+        if (valid & FUSE_SET_ATTR_MTIME_NOW) {
+            AZLogInfo("Setting mtime to now");
+            args.new_attributes.mtime.set_it = SET_TO_SERVER_TIME;
+        }
+
+        if (rpc_nfs3_setattr_task(ctx->GetRpcCtx(), setattrCallback, &args, ctx) == NULL)
+        {
+            // This call fails due to internal issues like OOM etc
+            // and not due to an actual error, hence retry.
+            rpcRetry = true;
+        }
+    } while (rpcRetry);
+}
+
+void NfsClient::setattr(
+    fuse_req_t req,
+    fuse_ino_t inode,
+    struct stat* attr,
+    int toSet,
+    struct fuse_file_info* file)
+{
+    //
+    // The context created here will be freed at the time response is sent to the client.
+    // In this case it will be freed in replyError() or replyAttr().
+    //
+    auto ctx = new NfsSetattrApiContext(
+        this, req, FOPTYPE_SETATTR, inode, attr, toSet, file);
+    setattrWithContext(ctx);
+}
+
+
+// Translate a NFS fattr3 into struct stat.
+void NfsClient::stat_from_fattr3(struct stat* st, const struct fattr3* attr)
+{
     ::memset(st, 0, sizeof(*st));
     st->st_dev = attr->fsid;
     st->st_ino = attr->fileid;
