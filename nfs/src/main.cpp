@@ -34,16 +34,16 @@ struct fuse_conn_info_opts* fuse_conn_info_opts_ptr;
 struct aznfsc_cfg
 {
     // config.yaml file path specified using --config-file= cmdline option.
-    char* config_yaml;
+    const char* config_yaml;
 
     /*
      * Storage account and container to mount and the optional cloud suffix.
      * The share path mounted is:
      * <account>.<cloud_suffix>:/<account>/<container>
      */
-    char* account;
-    char* container;
-    char* cloud_suffix;
+    const char* account;
+    const char* container;
+    const char* cloud_suffix;
 
     /*
      * NFS and Mount port to use.
@@ -98,8 +98,7 @@ struct aznfsc_cfg
         retrans(3),
         readdir_maxcount(UINT32_MAX)
     {
-        cloud_suffix = new char[strlen("blob.core.windows.net") + 1]; // +1 for null terminator
-        strcpy(cloud_suffix, "blob.core.windows.net");
+	cloud_suffix = "blob.core.windows.net";
     }
 } aznfsc_cfg;
 
