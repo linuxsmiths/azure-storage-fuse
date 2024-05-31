@@ -1,19 +1,11 @@
 #include "nfs_transport.h"
+#include "nfs_client.h"
 
-int rpc_transport::last_context(0);
-
-//
-// This should open the connection(s) to the remote server and initialize all the data members accordingly.
-// This will create 'x' number of nfs_connection objects where 'x' is the nconnect option and call open for each of them.
-// It opens 'x' connections to the server and adds the nfs_connection to the nfs_connections vector.
-// If we are unable to create any connection, then the method should return FALSE to the caller.
-// TODO: See if we want to open only some connections and open other connections when needed.
-//
 bool rpc_transport::start()
 {
-    for (int i = 0; i <  mnt_options->num_connections; i++)
+    for (int i = 0; i <  client->mnt_options.num_connections; i++)
     {
-        struct nfs_connection* connection = new nfs_connection(mnt_options);
+        struct nfs_connection* connection = new nfs_connection(client);
 
         if (!connection->open())
         {
@@ -23,7 +15,7 @@ bool rpc_transport::start()
         }
 
         // Add this connection to the vector.
-        nfs_connections.push_back(connection);
+        nfs_connections[i] = connection;
     }
 
     return true;
@@ -31,7 +23,7 @@ bool rpc_transport::start()
 
 void rpc_transport::close()
 {
-    for (int i = 0; i <  mnt_options->num_connections; i++)
+    for (int i = 0; i <  client->mnt_options.num_connections; i++)
     {
         struct nfs_connection* connection = nfs_connections[i];
         connection->close();
@@ -44,8 +36,7 @@ void rpc_transport::close()
 // This function decides which connection should be chosen for sending
 // the current request.
 // TODO: This is round-robined for now, should be modified later.
-struct nfs_context* rpc_transport::get_nfs_context()
+struct nfs_context* rpc_transport::get_nfs_context() const
 {
-    return nfs_connections[(last_context++)%(mnt_options->num_connections)]->get_nfs_context();
+    return nfs_connections[(last_context++)%(client->mnt_options.num_connections)]->get_nfs_context();
 }
-

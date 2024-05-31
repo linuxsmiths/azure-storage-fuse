@@ -1,8 +1,12 @@
 #pragma once
 #include "aznfsc.h"
 
+#define NFS_INODE_MAGIC *((const uint32_t *)"NFSI")
+
 struct nfs_inode
 {
+    const uint32_t magic = NFS_INODE_MAGIC;
+
     // Nfs filehandle returned by the server.
     nfs_fh3 fh;
 
