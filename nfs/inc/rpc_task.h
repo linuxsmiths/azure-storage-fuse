@@ -482,7 +482,7 @@ public:
         return client;
     }
 
-    bool get_index() const
+    int get_index() const
     {
         return index;
     }
