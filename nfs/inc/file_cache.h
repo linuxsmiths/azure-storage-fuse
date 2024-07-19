@@ -88,6 +88,7 @@ namespace MB_Flag {
        Uptodate = (1 << 0), // Fit for reading.
        Locked   = (1 << 1), // Exclusive access for updating membuf data.
        Dirty    = (1 << 2), // Data in membuf is newer than the Blob.
+       Flushing = (1 << 3), // Data in membuf writing to blob.
     };
 }
 
@@ -154,6 +155,7 @@ struct membuf
     // This membuf caches file data in the range [offset, offset+length).
     const uint64_t offset;
     const uint64_t length;
+    uint64_t flushed_length;
 
     // Backing file fd (-1 for non file-backed caches).
     const int backing_file_fd = -1;
@@ -397,6 +399,27 @@ struct membuf
         flag &= ~MB_Flag::Dirty;
 
         AZLogDebug("Clear dirty membuf [{}, {}), fd={}",
+                   offset, offset+length, backing_file_fd);
+    }
+
+    bool is_flushing() const
+    {
+        return (flag & MB_Flag::Flushing);
+    }
+
+    void set_flushing()
+    {
+        flag |= MB_Flag::Flushing;
+
+        AZLogDebug("Set flushing membuf [{}, {}), fd={}",
+                   offset, offset+length, backing_file_fd);
+    }
+
+    void clear_flushing()
+    {
+        flag &= ~MB_Flag::Flushing;
+
+        AZLogDebug("Clear flushing membuf [{}, {}), fd={}",
                    offset, offset+length, backing_file_fd);
     }
 
@@ -953,6 +976,14 @@ public:
         return !backing_file_name.empty();
     }
 
+    std::map<uint64_t, struct bytes_chunk>& get_chunkmap()
+    {
+        return chunkmap;
+    }
+
+    // Lock to protect chunkmap.
+    std::mutex lock;
+
     /**
      * This will run self tests to test the correctness of this class.
      */
@@ -1010,9 +1041,6 @@ private:
      * std::map of bytes_chunk, indexed by the starting offset of the chunk.
      */
     std::map<uint64_t, struct bytes_chunk> chunkmap;
-
-    // Lock to protect chunkmap.
-    std::mutex lock;
 
     std::string backing_file_name;
     int backing_file_fd = -1;

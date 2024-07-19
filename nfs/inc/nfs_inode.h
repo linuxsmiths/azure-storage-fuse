@@ -350,6 +350,11 @@ struct nfs_inode
         purge_dircache_nolock();
     }
 
+    void set_dirty_bytes(size_t dirty_count)
+    {
+        dirty_bytes += dirty_count;
+    }
+
     /**
      * Caller must hold the inode lock.
      * TODO: Implement this when we add read/write support.
