@@ -4,6 +4,7 @@
 #include <atomic>
 #include "aznfsc.h"
 #include "rpc_readdir.h"
+#include "file_cache.h"
 
 #define NFS_INODE_MAGIC *((const uint32_t *)"NFSI")
 
@@ -120,6 +121,14 @@ struct nfs_inode
      * Only valid for a directory, this will be nullptr for a non-directory.
      */
     std::shared_ptr<readdirectory_cache> dircache_handle;
+
+    /*
+     * Pointer to the bytes_chunk_cache.
+     * It cache the read/writes to the file.
+     * For directory this will be nullptr.
+     */
+    std::shared_ptr<bytes_chunk_cache> filecache_handle;
+    uint64_t dirty_bytes = 0;
 
     /**
      * TODO: Initialize attr with postop attributes received in the RPC
@@ -334,6 +343,11 @@ struct nfs_inode
     {
         std::unique_lock<std::shared_mutex> lock(ilock);
         purge_dircache_nolock();
+    }
+
+    void set_dirty_bytes(size_t dirty_count)
+    {
+        dirty_bytes += dirty_count;
     }
 
     /**
