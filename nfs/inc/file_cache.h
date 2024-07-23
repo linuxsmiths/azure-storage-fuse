@@ -120,6 +120,8 @@ struct membuf
      */
     ~membuf()
     {
+         AZLogDebug("membuf destructor [{}, {}), inuse={}",
+                   offset, offset+length, inuse.load());
         // inuse membuf must never be destroyed.
         assert(!is_inuse());
 
@@ -426,12 +428,16 @@ struct membuf
     void set_inuse()
     {
         inuse++;
+        AZLogDebug("set_inuse membuf [{}, {}), inuse={}",
+                   offset, offset+length, inuse.load());
     }
 
     void clear_inuse()
     {
         assert(inuse > 0);
         inuse--;
+        AZLogDebug("clear_inuse membuf [{}, {}), inuse={}",
+                   offset, offset+length, inuse.load());
     }
 
     bool is_inuse() const
