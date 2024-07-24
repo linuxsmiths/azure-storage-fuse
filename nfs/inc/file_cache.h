@@ -902,14 +902,6 @@ public:
         return !backing_file_name.empty();
     }
 
-    std::map<uint64_t, struct bytes_chunk>& get_chunkmap()
-    {
-        return chunkmap;
-    }
-
-    // Lock to protect chunkmap.
-    std::mutex lock;
-
     /**
      * This will run self tests to test the correctness of this class.
      */
@@ -1019,6 +1011,9 @@ private:
     std::string backing_file_name;
     int backing_file_fd = -1;
     std::atomic<uint64_t> backing_file_len = 0;
+
+    // Lock to protect chunkmap.
+    std::mutex lock;
 };
 
 }
