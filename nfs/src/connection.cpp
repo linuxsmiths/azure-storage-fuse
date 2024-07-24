@@ -26,6 +26,10 @@ bool nfs_connection::open()
     assert(mo.server == url->server);
     assert(mo.export_path == url->path);
 
+    // Set the mount port and port from the mount.options.
+    nfs_set_mountport(nfs_context, mo.mount_port);
+    nfs_set_nfsport(nfs_context, mo.mount_port);
+
     /*
      * Call libnfs for mounting the share.
      * This will create a connection to the NFS server and perform mount.
