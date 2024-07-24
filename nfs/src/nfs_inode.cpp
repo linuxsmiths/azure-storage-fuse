@@ -64,6 +64,8 @@ nfs_inode::nfs_inode(const struct nfs_fh3 *filehandle,
         filecache_handle = std::make_shared<bytes_chunk_cache>();
         readahead_state = std::make_shared<ra_state>(client, this);
     }
+
+    write_error = 0;
 }
 
 nfs_inode::~nfs_inode()
