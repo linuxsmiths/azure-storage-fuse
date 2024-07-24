@@ -1044,12 +1044,12 @@ private:
      */
     std::map<uint64_t, struct bytes_chunk> chunkmap;
 
+    // Lock to protect chunkmap.
+    std::mutex lock;
+
     std::string backing_file_name;
     int backing_file_fd = -1;
     std::atomic<uint64_t> backing_file_len = 0;
-
-    // Lock to protect chunkmap.
-    std::mutex lock;
 };
 
 }
