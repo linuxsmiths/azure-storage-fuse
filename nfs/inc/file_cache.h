@@ -120,8 +120,8 @@ struct membuf
      */
     ~membuf()
     {
-         AZLogDebug("membuf destructor [{}, {}), inuse={}",
-                   offset, offset+length, inuse.load());
+        // AZLogDebug("membuf destructor [{}, {}), inuse={}",
+        //           offset, offset+length, inuse.load());
         // inuse membuf must never be destroyed.
         assert(!is_inuse());
 
@@ -262,8 +262,8 @@ struct membuf
 
         flag &= ~MB_Flag::Uptodate;
 
-        AZLogDebug("Clear uptodate membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+       // AZLogDebug("Clear uptodate membuf [{}, {}), fd={}",
+         //          offset, offset+length, backing_file_fd);
     }
 
     bool is_locked() const
@@ -294,8 +294,8 @@ struct membuf
      */
     void set_locked()
     {
-        AZLogDebug("Locking membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+       // AZLogDebug("Locking membuf [{}, {}), fd={}",
+         //          offset, offset+length, backing_file_fd);
 
         /*
          * get() returns with inuse set on the returned membufs.
@@ -325,8 +325,8 @@ struct membuf
             }
         }
 
-        AZLogDebug("Successfully locked membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+     //   AZLogDebug("Successfully locked membuf [{}, {}), fd={}",
+       //            offset, offset+length, backing_file_fd);
 
         // Must never return w/o locking the membuf.
         assert(is_locked());
@@ -350,8 +350,8 @@ struct membuf
             std::unique_lock<std::mutex> _lock(lock);
             flag &= ~MB_Flag::Locked;
 
-            AZLogDebug("Unlocked membuf [{}, {}), fd={}",
-                       offset, offset+length, backing_file_fd);
+          //  AZLogDebug("Unlocked membuf [{}, {}), fd={}",
+            //           offset, offset+length, backing_file_fd);
         }
 
         // Wakeup one waiter.
@@ -388,8 +388,8 @@ struct membuf
 
         flag |= MB_Flag::Dirty;
 
-        AZLogDebug("Set dirty membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+       // AZLogDebug("Set dirty membuf [{}, {}), fd={}",
+         //          offset, offset+length, backing_file_fd);
     }
 
     void clear_dirty()
@@ -400,8 +400,8 @@ struct membuf
 
         flag &= ~MB_Flag::Dirty;
 
-        AZLogDebug("Clear dirty membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+        // AZLogDebug("Clear dirty membuf [{}, {}), fd={}",
+           //        offset, offset+length, backing_file_fd);
     }
 
     bool is_flushing() const
@@ -413,31 +413,31 @@ struct membuf
     {
         flag |= MB_Flag::Flushing;
 
-        AZLogDebug("Set flushing membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+       //  AZLogDebug("Set flushing membuf [{}, {}), fd={}",
+          //         offset, offset+length, backing_file_fd);
     }
 
     void clear_flushing()
     {
         flag &= ~MB_Flag::Flushing;
 
-        AZLogDebug("Clear flushing membuf [{}, {}), fd={}",
-                   offset, offset+length, backing_file_fd);
+        // AZLogDebug("Clear flushing membuf [{}, {}), fd={}",
+           //        offset, offset+length, backing_file_fd);
     }
 
     void set_inuse()
     {
         inuse++;
-        AZLogDebug("set_inuse membuf [{}, {}), inuse={}",
-                   offset, offset+length, inuse.load());
+        // AZLogDebug("set_inuse membuf [{}, {}), inuse={}",
+            //       offset, offset+length, inuse.load());
     }
 
     void clear_inuse()
     {
         assert(inuse > 0);
         inuse--;
-        AZLogDebug("clear_inuse membuf [{}, {}), inuse={}",
-                   offset, offset+length, inuse.load());
+        // AZLogDebug("clear_inuse membuf [{}, {}), inuse={}",
+          //         offset, offset+length, inuse.load());
     }
 
     bool is_inuse() const
@@ -934,6 +934,10 @@ public:
     {
         scan(offset, length, scan_action::SCAN_ACTION_RELEASE);
     }
+
+
+    std::vector<bytes_chunk> get_dirty_bc();
+    
 
     /**
      * Drop cached data in the given range.
