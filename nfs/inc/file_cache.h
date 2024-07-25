@@ -88,6 +88,7 @@ namespace MB_Flag {
        Uptodate = (1 << 0), // Fit for reading.
        Locked   = (1 << 1), // Exclusive access for updating membuf data.
        Dirty    = (1 << 2), // Data in membuf is newer than the Blob.
+       Flushing = (1 << 3), // Data in membuf writing to blob.
     };
 }
 
@@ -397,6 +398,27 @@ struct membuf
         flag &= ~MB_Flag::Dirty;
 
         AZLogDebug("Clear dirty membuf [{}, {}), fd={}",
+                   offset, offset+length, backing_file_fd);
+    }
+
+    bool is_flushing() const
+    {
+        return (flag & MB_Flag::Flushing);
+    }
+
+    void set_flushing()
+    {
+        flag |= MB_Flag::Flushing;
+
+        AZLogDebug("Set flushing membuf [{}, {}), fd={}",
+                    offset, offset+length, backing_file_fd);
+    }
+
+    void clear_flushing()
+    {
+        flag &= ~MB_Flag::Flushing;
+
+        AZLogDebug("Clear flushing membuf [{}, {}), fd={}",
                    offset, offset+length, backing_file_fd);
     }
 
@@ -927,6 +949,14 @@ public:
     {
         scan(offset, length, scan_action::SCAN_ACTION_RELEASE);
     }
+
+    /*
+     * get_dirty_bc returns all dirty chunks in chunkmap.
+     * Before returning it increase the inuse of underlying membuf.
+     * After the use, call clear_inuse().
+     */
+    std::vector<bytes_chunk> get_dirty_bc();
+    
 
     /**
      * Drop cached data in the given range.

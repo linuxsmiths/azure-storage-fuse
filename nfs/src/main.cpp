@@ -675,9 +675,10 @@ static void aznfsc_ll_write(fuse_req_t req,
                             off_t off,
                             struct fuse_file_info *fi)
 {
-    /*
-     * TODO: Fill me.
-     */
+
+    AZLogInfo("aznfsc_ll_write(req={}, ino={}, size={}, off={}, fi={}",
+               fmt::ptr(req), ino, size, off, fmt::ptr(fi));
+
     fuse_reply_err(req, ENOSYS);
 }
 
@@ -687,10 +688,9 @@ static void aznfsc_ll_flush(fuse_req_t req,
 {
     AZLogInfo("aznfsc_ll_flush(req={}, ino={}, fi={})",
                fmt::ptr(req), ino, fmt::ptr(fi));
-    /*
-     * TODO: Fill me.
-     */
-    fuse_reply_err(req, ENOSYS);
+
+    struct nfs_client *client = get_nfs_client_from_fuse_req(req);
+    client->flush(req, ino);
 }
 
 static void aznfsc_ll_release(fuse_req_t req,
@@ -699,10 +699,9 @@ static void aznfsc_ll_release(fuse_req_t req,
 {
     AZLogInfo("aznfsc_ll_release(req={}, ino={}, fi={})",
                fmt::ptr(req), ino, fmt::ptr(fi));
-    /*
-     * TODO: Fill me.
-     */
-    fuse_reply_err(req, ENOSYS);
+
+    struct nfs_client *client = get_nfs_client_from_fuse_req(req);
+    client->flush(req, ino);
 }
 
 static void aznfsc_ll_fsync(fuse_req_t req,
@@ -947,10 +946,16 @@ static void aznfsc_ll_write_buf(fuse_req_t req,
                                 off_t off,
                                 struct fuse_file_info *fi)
 {
-    /*
-     * TODO: Fill me.
-     */
-    fuse_reply_err(req, ENOSYS);
+
+    AZLogInfo("aznfsc_ll_write_buf(req={}, ino={}, off={}, fi={}",
+               fmt::ptr(req), ino, off, fmt::ptr(fi));
+
+    struct nfs_client *client = get_nfs_client_from_fuse_req(req);
+    assert(bufv->idx <= bufv->count);
+
+    size_t length = bufv->buf[bufv->idx].size - bufv->off;
+
+    client->write(req, ino, bufv, length, off);
 }
 
 static void aznfsc_ll_retrieve_reply(fuse_req_t req,
