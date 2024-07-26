@@ -312,7 +312,7 @@ static void write_flush_callback(
     // No need to lock the membuf while issuing write, it's locked.
     assert(membuf != nullptr);
     assert(membuf->is_inuse() && membuf->is_locked());
-    assert(membuf->is_flushing() && membuf->is_dirty());
+    assert(membuf->is_flushing() && membuf->is_dirty() && membuf->is_uptodate());
 
     auto res = (WRITE3res *)data;
     const int status = task->status(rpc_status, NFS_STATUS(res));
@@ -521,7 +521,7 @@ copy_to_cache(struct nfs_client *const client,
     
     // If fd is set then no buffer available.
     if (fd_set) {
-//        assert(bufv->buf[bufv->idx].mem == nullptr);
+        assert(bufv->buf[bufv->idx].mem == 0x0);
     } else {
         buf = (char *) bufv->buf[bufv->idx].mem  + bufv->off;
     }
@@ -544,7 +544,7 @@ copy_to_cache(struct nfs_client *const client,
         // Lock the membuf to do the operation.
         membuf->set_locked();
 
-        // Chunk is owned by us or update.
+        // Chunk is owned by us or uptodate.
         if (chunk.is_empty || membuf->is_uptodate())
         {
             // Read from the fd and copy to buffer.
@@ -566,6 +566,13 @@ copy_to_cache(struct nfs_client *const client,
                             error = -errno;
                         } else if (res == 0) {
                             error = EOF;
+                        }
+                        AZLogDebug("Read from fd failed, res = {}, error = {}", res, error);
+
+                        // If we written some data, then clear uptodate flag.
+                        if (len != chunk.length)
+                        {
+                            membuf->clear_uptodate();
                         }
                         break;
                     }
@@ -607,14 +614,13 @@ copy_to_cache(struct nfs_client *const client,
     }
     
     if (error < 0) {
+        AZLogDebug("Error is set, releasing chunkMap ({}, {})", offset, length);
         for (auto &chunk : chunkvec)
         {
             auto membuf = chunk.get_membuf();
 
-            // Lock the membuf to do the operation.
-            membuf->set_locked();
+            // Clear the membuf inuse flag.
             membuf->clear_inuse();
-            membuf->clear_locked();
         }
         file_inode->filecache_handle->release(offset, length);
         return std::vector<bytes_chunk>();
@@ -662,6 +668,7 @@ void rpc_task::run_write()
         membuf->set_locked();
 
         assert(membuf->is_dirty());
+        assert(membuf->is_uptodate());
 
         // Fill the Write RPC arguments.
         args.file = client->get_nfs_inode_from_ino(file_ino)->get_fh();
