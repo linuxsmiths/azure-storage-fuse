@@ -823,13 +823,6 @@ void rpc_task::read_from_server(struct bytes_chunk &bc)
                        rpc_api.read_task.get_size(),
                        rpc_api.read_task.get_offset());
 
-            /*
-             * Since the data is read from the cache, the chances of reading it
-             * again from cache is negligible since this is a sequential read
-             * pattern. Free such chunks to reduce the memory utilization.
-             */
-            inode->filecache_handle->release(bc.offset, bc.length);
-
             return;
         }
 
