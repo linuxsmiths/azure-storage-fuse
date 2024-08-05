@@ -452,6 +452,7 @@ static void createfile_callback(
     rpc_task *task = (rpc_task*) private_data;
     auto res = (CREATE3res*)data;
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(CREATE3res);
 
     if (status == 0) {
         assert(
@@ -463,8 +464,10 @@ static void createfile_callback(
             &res->CREATE3res_u.resok.obj.post_op_fh3_u.handle,
             &res->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes,
             task->rpc_api.create_task.get_file());
+        task->get_stats().on_rpc_complete(resp_size);
     } else {
         task->reply_error(status);
+        task->get_stats().on_rpc_complete(resp_size);
     }
 }
 
@@ -481,6 +484,7 @@ static void setattr_callback(
     const struct nfs_inode *inode =
         task->get_client()->get_nfs_inode_from_ino(ino);
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(SETATTR3res);
 
     if (status == 0) {
         assert(res->SETATTR3res_u.resok.obj_wcc.after.attributes_follow);
@@ -495,8 +499,10 @@ static void setattr_callback(
          * experience.
          */
         task->reply_attr(&st, inode->get_actimeo());
+        task->get_stats().on_rpc_complete(resp_size);
     } else {
         task->reply_error(status);
+        task->get_stats().on_rpc_complete(resp_size);
     }
 }
 
@@ -857,6 +863,7 @@ void rpc_task::run_create_file()
         args.how.mode = (rpc_api.create_task.get_file()->flags & O_EXCL) ? GUARDED : UNCHECKED;
         args.how.createhow3_u.obj_attributes.mode.set_it = 1;
         args.how.createhow3_u.obj_attributes.mode.set_mode3_u.mode = rpc_api.create_task.get_mode();
+        stats.on_rpc_dispatch(sizeof(args));
 
         if (rpc_nfs3_create_task(get_rpc_ctx(), createfile_callback, &args, this) == NULL)
         {
@@ -983,6 +990,8 @@ void rpc_task::run_setattr()
         if (valid & FUSE_SET_ATTR_MTIME_NOW) {
             args.new_attributes.mtime.set_it = SET_TO_SERVER_TIME;
         }
+
+        stats.on_rpc_dispatch(sizeof(args));
 
         if (rpc_nfs3_setattr_task(get_rpc_ctx(), setattr_callback, &args, this) == NULL)
         {
