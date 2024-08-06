@@ -1230,6 +1230,7 @@ static void read_callback(
     auto ino = task->rpc_api.read_task.get_inode();
     auto filecache_handle =
         task->get_client()->get_nfs_inode_from_ino(ino)->filecache_handle;
+    int resp_size = sizeof(*res);
 
     AZLogDebug("[{}] read_callback: Bytes read: {} eof: {}, "
                "requested_bytes: {} off: {}",
@@ -1245,6 +1246,9 @@ static void read_callback(
     bc->pvt = res->READ3res_u.resok.count;
 
     if (status == 0) {
+        resp_size += res->READ3res_u.resok.count;
+        task->get_stats().on_rpc_complete(resp_size);
+
         /*
          * TODO: Handle the case where server returns fewer bytes than
          *       requested. Fuse cannot accept fewer bytes than requested,
@@ -1278,6 +1282,8 @@ static void read_callback(
                    bc->offset,
                    bc->length,
                    errstr);
+
+        task->get_stats().on_rpc_complete(resp_size);
     }
 
     /*
@@ -1336,6 +1342,8 @@ void rpc_task::read_from_server(struct bytes_chunk &bc)
         args.offset = bc.offset;
         args.count = bc.length;
 
+        int req_size = sizeof(args);
+
         /*
          * Now we are going to issue an NFS read that will read the data from
          * the NFS server and update the buffer. Grab the membuf lock, this
@@ -1370,6 +1378,8 @@ void rpc_task::read_from_server(struct bytes_chunk &bc)
 
             return;
         }
+
+        stats.on_rpc_dispatch(req_size);
 
         // Increment the number of reads issued.
         num_ongoing_backend_reads++;
