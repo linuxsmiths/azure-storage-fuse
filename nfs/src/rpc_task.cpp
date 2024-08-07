@@ -452,11 +452,15 @@ static void createfile_callback(
     rpc_task *task = (rpc_task*) private_data;
     auto res = (CREATE3res*)data;
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(*res);
 
     if (status == 0) {
         assert(
             res->CREATE3res_u.resok.obj.handle_follows &&
             res->CREATE3res_u.resok.obj_attributes.attributes_follow);
+
+        resp_size += res->CREATE3res_u.resok.obj.post_op_fh3_u.handle.data.data_len;
+        task->get_stats().on_rpc_complete(resp_size);
 
         task->get_client()->reply_entry(
             task,
@@ -464,6 +468,7 @@ static void createfile_callback(
             &res->CREATE3res_u.resok.obj_attributes.post_op_attr_u.attributes,
             task->rpc_api.create_task.get_file());
     } else {
+        task->get_stats().on_rpc_complete(resp_size);
         task->reply_error(status);
     }
 }
@@ -481,6 +486,7 @@ static void setattr_callback(
     const struct nfs_inode *inode =
         task->get_client()->get_nfs_inode_from_ino(ino);
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(*res);
 
     if (status == 0) {
         assert(res->SETATTR3res_u.resok.obj_wcc.after.attributes_follow);
@@ -489,6 +495,9 @@ static void setattr_callback(
 
         task->get_client()->stat_from_fattr3(
             &st, &res->SETATTR3res_u.resok.obj_wcc.after.post_op_attr_u.attributes);
+
+        task->get_stats().on_rpc_complete(resp_size);
+
         /*
          * Set fuse kernel attribute cache timeout to the current attribute
          * cache timeout for this inode, as per the recent revalidation
@@ -496,6 +505,7 @@ static void setattr_callback(
          */
         task->reply_attr(&st, inode->get_actimeo());
     } else {
+        task->get_stats().on_rpc_complete(resp_size);
         task->reply_error(status);
     }
 }
@@ -509,11 +519,15 @@ void mkdir_callback(
     rpc_task *task = (rpc_task*) private_data;
     auto res = (MKDIR3res*)data;
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(*res);
 
     if (status == 0) {
         assert(
             res->MKDIR3res_u.resok.obj.handle_follows &&
             res->MKDIR3res_u.resok.obj_attributes.attributes_follow);
+
+        resp_size += res->MKDIR3res_u.resok.obj.post_op_fh3_u.handle.data.data_len;
+        task->get_stats().on_rpc_complete(resp_size);
 
         task->get_client()->reply_entry(
             task,
@@ -521,6 +535,7 @@ void mkdir_callback(
             &res->MKDIR3res_u.resok.obj_attributes.post_op_attr_u.attributes,
             nullptr);
     } else {
+        task->get_stats().on_rpc_complete(resp_size);
         task->reply_error(status);
     }
 }
@@ -534,10 +549,13 @@ void rmdir_callback(
     rpc_task *task = (rpc_task*) private_data;
     auto res = (RMDIR3res*) data;
     const int status = task->status(rpc_status, NFS_STATUS(res));
+    int resp_size = sizeof(*res);
 
     if (status == 0) {
+        task->get_stats().on_rpc_complete(resp_size);
          task->reply_error(0);
     } else {
+        task->get_stats().on_rpc_complete(resp_size);
         task->reply_error(status);
     }
 }
@@ -858,6 +876,11 @@ void rpc_task::run_create_file()
         args.how.createhow3_u.obj_attributes.mode.set_it = 1;
         args.how.createhow3_u.obj_attributes.mode.set_mode3_u.mode = rpc_api.create_task.get_mode();
 
+        int req_size = sizeof(args);
+        req_size += args.where.dir.data.data_len;
+        req_size += ::strlen(args.where.name);
+        stats.on_rpc_dispatch(req_size);
+
         if (rpc_nfs3_create_task(get_rpc_ctx(), createfile_callback, &args, this) == NULL)
         {
             /*
@@ -882,6 +905,11 @@ void rpc_task::run_mkdir()
         args.attributes.mode.set_it = 1;
         args.attributes.mode.set_mode3_u.mode = rpc_api.mkdir_task.get_mode();
 
+        int req_size = sizeof(args);
+        req_size += args.where.dir.data.data_len;
+        req_size += ::strlen(args.where.name);
+        stats.on_rpc_dispatch(req_size);
+
         if (rpc_nfs3_mkdir_task(get_rpc_ctx(), mkdir_callback, &args, this) == NULL)
         {
             /*
@@ -903,6 +931,11 @@ void rpc_task::run_rmdir()
         ::memset(&args, 0, sizeof(args));
         args.object.dir = get_client()->get_nfs_inode_from_ino(parent_ino)->get_fh();
         args.object.name = (char*) rpc_api.rmdir_task.get_dir_name();
+
+        int req_size = sizeof(args);
+        req_size += args.object.dir.data.data_len;
+        req_size += ::strlen(args.object.name);
+        stats.on_rpc_dispatch(req_size);
 
         if (rpc_nfs3_rmdir_task(get_rpc_ctx(),
                                 rmdir_callback, &args, this) == NULL) {
@@ -926,6 +959,10 @@ void rpc_task::run_setattr()
         SETATTR3args args;
         ::memset(&args, 0, sizeof(args));
         args.object = get_client()->get_nfs_inode_from_ino(ino)->get_fh();
+
+        int req_size = sizeof(args);
+        req_size += args.object.data.data_len;
+        stats.on_rpc_dispatch(req_size);
 
         if (valid & FUSE_SET_ATTR_SIZE) {
             AZLogInfo("Setting size to {}", attr->st_size);
