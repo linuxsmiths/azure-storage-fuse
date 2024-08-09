@@ -151,6 +151,8 @@ struct nfs_inode
      * MUST be conveyed to the application via close(), else it'll never know.
      */
     int write_error = 0;
+    std::atomic<uint64_t> dirty_data = 0;
+    std::atomic<uint64_t> data_flushing = 0;
 
     /**
      * TODO: Initialize attr with postop attributes received in the RPC

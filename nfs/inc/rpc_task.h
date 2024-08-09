@@ -168,6 +168,80 @@ private:
  * - Flush
  * - Fsync
  */
+struct write_iov_context
+{
+    void set_count(size_t _count)
+    {
+        count = _count;
+    }
+
+    size_t get_count() const
+    {
+        return count;
+    }
+
+    struct rpc_task *get_task() const
+    {
+        return task;
+    }
+
+    off_t get_offset() const
+    {
+        return offset;
+    }
+
+    size_t get_length() const
+    {
+        return length;
+    }
+
+    fuse_ino_t get_ino() const
+    {
+        return ino;
+    }
+
+    const std::vector<bytes_chunk>& get_bc_vec() const
+    {
+        return bc_vec;
+    }
+
+    /**
+     * Release any resources used up by this task.
+     */
+    void release()
+    {
+    }
+
+    write_iov_context(rpc_task *_task,
+                      std::vector<bytes_chunk> _bc_vec,  
+                      fuse_ino_t _ino,
+                      off_t _off,
+                      size_t _size) :
+        task(_task),
+        bc_vec(_bc_vec),
+        ino(_ino),
+        offset(_off),
+        length(_size),
+        count(0)
+      {
+
+      }
+
+private:
+    struct rpc_task *task;
+    const std::vector<bytes_chunk> bc_vec;
+    fuse_ino_t ino;
+    off_t offset;
+    size_t length;
+    size_t count;
+};
+
+/**
+ * Write callback context, used by following calls:
+ * - Write
+ * - Flush
+ * - Fsync
+ */
 struct write_context
 {
     void set_count(size_t _count)
