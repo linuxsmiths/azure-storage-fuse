@@ -813,7 +813,7 @@ public:
          * We do inline pruning when we are "extremely" high on memory usage
          * and hence cannot proceed w/o making space for the new request.
          */
-         inline_prune();
+        inline_prune();
 
         return scan(offset, length, scan_action::SCAN_ACTION_GET,
                     extent_left, extent_right);

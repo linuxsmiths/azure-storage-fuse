@@ -13,8 +13,8 @@
 //#define DEBUG_FILE_CACHE
 
 #ifndef DEBUG_FILE_CACHE
-//#undef AZLogDebug
-//#define AZLogDebug(fmt, ...)    /* nothing */
+#undef AZLogDebug
+#define AZLogDebug(fmt, ...)    /* nothing */
 //#undef AZLogInfo
 //#define AZLogInfo(fmt, ...)     /* nothing */
 #else
@@ -1774,7 +1774,6 @@ std::vector<bytes_chunk> bytes_chunk_cache::get_continous_bc_range(uint64_t star
 
     return bc_vec;
 }
-
 
 static void cache_read(bytes_chunk_cache& cache,
                        uint64_t offset,

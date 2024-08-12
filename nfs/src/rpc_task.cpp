@@ -869,7 +869,6 @@ static void sync_membuf_iovec(const std::vector<bytes_chunk>& bc_vec,
     uint64_t start_off = 0;
     uint64_t length = 0;
     std::vector<bytes_chunk> write_bc_vec;
-    // write_bc_vec.reserve(10);
 
     for (const bytes_chunk &bc : bc_vec)
     {
@@ -973,6 +972,7 @@ static void sync_membuf_iovec(const std::vector<bytes_chunk>& bc_vec,
     }
 }
 
+#if 0
 /**
  * Synchronize (aka flush) a membuf to backing Blob.
  * It does the following:
@@ -1062,6 +1062,7 @@ static void sync_membuf(const struct bytes_chunk& bc,
         flush_task->free_rpc_task();
     }
 }
+#endif
 
 void rpc_task::run_write()
 {
@@ -1072,6 +1073,7 @@ void rpc_task::run_write()
     off_t offset = rpc_api.write_task.get_offset();
     uint64_t extent_left = 0;
     uint64_t extent_right = 0;
+    uint64_t periodic_bytes = 0;
 
     /*
      * Don't issue new writes if some previous write had failed with error.
@@ -1097,11 +1099,13 @@ void rpc_task::run_write()
      * we support buffered writes.
      */
     copy_to_cache(get_client(), ino, bufv, offset, length, &extent_left, &extent_right);
+
     assert(extent_right >= extent_left);
     AZLogDebug("extent_right: {}, extent_left{}",extent_right, extent_left);
     AZLogDebug("dirty_data: {}, data_flushing{}",inode->dirty_data.load(), inode->data_flushing.load());
 
-    if ((inode->dirty_data - inode->data_flushing) < 1048576) {
+    inode->filecache_handle->get_prune_goals(nullptr, &periodic_bytes);
+    if (inode->data_flushing >= periodic_bytes) {
         AZLogDebug("Reply write without syncing to Blob");
         reply_write(length);
         return; 
@@ -1144,10 +1148,7 @@ void rpc_task::run_flush()
     const std::vector<bytes_chunk> bc_vec = filecache_handle->get_dirty_bc();
 
     // Flush dirty membufs to backend.
-    for (const bytes_chunk& bc : bc_vec) {
-        // Flush the membuf to backend.
-        sync_membuf(bc, client, ino);
-    }
+    sync_membuf_iovec(bc_vec, client, ino, false);
 
     /*
      * Our caller expects us to return only after the flush completes.
