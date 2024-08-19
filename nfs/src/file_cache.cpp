@@ -1749,6 +1749,31 @@ std::vector<bytes_chunk> bytes_chunk_cache::get_dirty_bc() const
     return bc_vec;
 }
 
+std::vector<bytes_chunk> bytes_chunk_cache::get_continous_bc_range(uint64_t start_off, uint64_t end_off) const
+{
+    std::vector<bytes_chunk> bc_vec;
+
+    // TODO: Make it shared lock.
+    const std::unique_lock<std::mutex> _lock(lock);
+    auto it = chunkmap.lower_bound(start_off);
+
+    // There should be bc starting with this offset.
+   // assert(it->first == start_off);
+
+    while (it != chunkmap.cend() && it->first <= end_off) {
+        const struct bytes_chunk& bc = it->second;
+        struct membuf *mb = bc.get_membuf();
+
+        if (mb->is_dirty() && !mb->is_flushing()) {
+            bc_vec.emplace_back(bc);
+        }
+
+        ++it;
+    }
+
+    return bc_vec;
+}
+
 static void cache_read(bytes_chunk_cache& cache,
                        uint64_t offset,
                        uint64_t length)

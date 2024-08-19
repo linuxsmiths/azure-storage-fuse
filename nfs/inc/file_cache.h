@@ -880,6 +880,8 @@ public:
      */
     std::vector<bytes_chunk> get_dirty_bc() const;
 
+    std::vector<bytes_chunk> get_continous_bc_range(uint64_t oofset, uint64_t size) const;
+
     /**
      * Drop cached data in the given range.
      * This must be called only for file-backed caches. For non file-backed
