@@ -1386,7 +1386,7 @@ public:
 
     void send_read_response();
     void read_from_server(struct bytes_chunk &bc);
-    void read_modified_write(struct bytes_chunk &bc);
+    void read_modified_write(struct bytes_chunk &bc, size_t offset);
 };
 
 class rpc_task_helper
