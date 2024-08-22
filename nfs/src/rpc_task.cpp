@@ -907,15 +907,9 @@ copy_to_cache(struct nfs_client *const client,
             ::memcpy(bc.get_buffer(), buf, bc.length);
             mb->set_dirty();
             mb->set_uptodate();
-        } else {
-            /*
-             * TODO: Need to issue read.
-             */
-            assert(0);
         }
 
         mb->clear_locked();
-
         buf += bc.length;
         remaining -= bc.length;
         assert((int) remaining >= 0);
@@ -1072,8 +1066,7 @@ void rpc_task::run_write()
      * membufs. We don't wait for the writes to actually finish, which means
      * we support buffered writes.
      */
-    std::vector<bytes_chunk> bc_vec =
-        copy_to_cache(get_client(), ino, bufv, offset, length, error_code);
+    bc_vec = copy_to_cache(get_client(), ino, bufv, offset, length, error_code);
     assert(bc_vec.size() > 0);
 
     /*
@@ -1100,6 +1093,7 @@ void rpc_task::run_write()
              * read_modified_write() checks if it's already upto date or not.
              */
             read_modified_write(bc, buffer_offset);
+            AZLogDebug("Issued Read Modified Write");
         }
         buffer_offset += bc.length;
 
@@ -1855,7 +1849,7 @@ static void read_modified_write_callback(
     rpc_task *task = ctx->task;
     assert(task->magic == RPC_TASK_MAGIC);
 
-    rpc_task *parent_task = task->parent_task;
+    rpc_task *parent_task = task->rpc_api->parent_task;
 
     /*
      * Only child tasks can issue the read RPC, hence the callback should
@@ -1942,7 +1936,8 @@ static void read_modified_write_callback(
              * current RPC task. This is required if the current task itself
              * if one of the child tasks running part of the fuse read request.
              */
-            child_tsk->parent_task = parent_task;
+            child_tsk->rpc_api->parent_task = parent_task;
+            child_tsk->rpc_api->bc = bc;
 
             /*
              * TODO: To avoid allocating a new read_context we can reuse the
@@ -2476,7 +2471,8 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
                 mb->offset,
                 nullptr);
 
-        child_tsk->parent_task = this;
+        child_tsk->rpc_api->parent_task = this;
+        child_tsk->rpc_api->bc = &bc;
 
         // This will be freed in read_modified_write_callback().
         struct read_modified_write_context *ctx =
