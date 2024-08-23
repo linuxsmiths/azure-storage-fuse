@@ -417,7 +417,7 @@ static void write_callback(
     struct rpc_task *task = ctx->get_task();
     assert(task->magic == RPC_TASK_MAGIC);
 
-    const struct bytes_chunk *bc = &ctx->get_bytes_chunk();
+    struct bytes_chunk *bc = &ctx->get_bytes_chunk();
     struct membuf *mb = bc->get_membuf();
     struct nfs_client *client = task->get_client();
     assert(client->magic == NFS_CLIENT_MAGIC);
@@ -467,11 +467,10 @@ static void write_callback(
         const size_t size = mb->length;
 
         // How much has been written till now (including this WRITE).
-        const size_t count = ctx->get_count() + res->WRITE3res_u.resok.count;
+        const size_t count = bc->pvt + res->WRITE3res_u.resok.count;
 
         assert(count <= size);
 
-        // TODO: Use bc->pvt for tracking progressing in case of partial writes.
         if (count < size) {
             /*
              * Written less than intended, unlikely but possible.
@@ -489,7 +488,7 @@ static void write_callback(
 	        args.stable = FILE_SYNC;
 	        args.data.data_len = size - count;
             args.data.data_val = buf + count;
-            ctx->set_count(count);
+            bc->pvt = count;
 
             /*
              * Create new flush task to write remaining buffer.
@@ -497,13 +496,15 @@ static void write_callback(
              */
             struct rpc_task *flush_task = client->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
             flush_task->init_flush(nullptr /* fuse_req */, ino);
+            flush_task->rpc_api->bc = bc;
+            flush_task->rpc_api->pvt = (void *) ctx;
 
             // Update the ctx with new task.
             ctx->set_task(flush_task);
 
             // TODO: Make this AZLogDebug after some time.
             AZLogInfo("[{}] Partial write: [{}, {}) of [{}, {})", ctx->get_ino(),
-                       mb->offset + ctx->get_count(), mb->offset + count,
+                       mb->offset + bc->pvt, mb->offset + count,
                        mb->offset, mb->offset + mb->length);
 
             bool rpc_retry;
@@ -546,18 +547,25 @@ static void write_callback(
             mb->clear_flushing();
         }
     } else {
-        /*
-         * Since the api failed and can no longer be retried, set write_error
-         * and do not clear dirty flag.
-         */
-        AZLogError("[{}] Write [{}, {}) failed with status {}: {}",
-                   ctx->get_ino(),
-                   mb->offset + ctx->get_count(), mb->offset + mb->length,
-                   status, errstr);
+        if (NFS_STATUS(res) == NFS3ERR_JUKEBOX) {
+            AZLogDebug("[{}] JUKEBOX error write, off: {}, len: {}",
+                       ctx->get_ino(), mb->offset, mb->length);
+            task->get_client()->jukebox_retry(task);
+            return;
+        } else {
+            /*
+            * Since the api failed and can no longer be retried, set write_error
+            * and do not clear dirty flag.
+            */
+            AZLogError("[{}] Write [{}, {}) failed with status {}: {}",
+                    ctx->get_ino(),
+                    mb->offset + bc->pvt, mb->offset + mb->length,
+                    status, errstr);
 
-        assert(mb->is_dirty());
-        mb->clear_flushing();
-        inode->set_write_error(status);
+            assert(mb->is_dirty());
+            mb->clear_flushing();
+            inode->set_write_error(status);
+        }
     }
 
     mb->clear_locked();
@@ -869,7 +877,7 @@ void rpc_task::run_lookup()
  * vector. Caller will then have to write these chunks to the Blob.
  */
 static std::vector<bytes_chunk>
-copy_to_cache(struct nfs_client *const client,
+copy_to_cache(struct rpc_task *task,
               fuse_ino_t ino,
               struct fuse_bufvec* bufv,
               off_t offset,
@@ -886,7 +894,7 @@ copy_to_cache(struct nfs_client *const client,
     assert(bufv->count == 1);
 
     const char *buf = (char *) bufv->buf[bufv->idx].mem + bufv->off;
-    struct nfs_inode *inode = client->get_nfs_inode_from_ino(ino);
+    struct nfs_inode *inode = task->get_client()->get_nfs_inode_from_ino(ino);
     std::vector<bytes_chunk> bc_vec =
         inode->filecache_handle->get(offset, length);
 
@@ -907,18 +915,43 @@ copy_to_cache(struct nfs_client *const client,
             ::memcpy(bc.get_buffer(), buf, bc.length);
             mb->set_dirty();
             mb->set_uptodate();
+        } else {
+            task->read_modified_write(bc);
+            assert(mb->is_uptodate() || task->read_status != 0);
+            if (task->read_status != 0) {
+                error = task->read_status;
+            } else {
+                // buffer copy case.
+                ::memcpy(bc.get_buffer(), buf, bc.length);
+                mb->set_dirty();
+            }
         }
 
         mb->clear_locked();
+        if (error != 0) {
+            break;
+        }
+
         buf += bc.length;
         remaining -= bc.length;
+
         assert((int) remaining >= 0);
+    }
+
+    if (error != 0) {
+        for (auto &bc : bc_vec) {
+            struct membuf *mb = bc.get_membuf();
+            mb->clear_inuse();
+            inode->filecache_handle->release(bc.offset, bc.length);
+        }
     }
 
     assert(remaining == 0);
 
     return bc_vec;
 }
+
+
 
 /**
  * Synchronize (aka flush) a membuf to backing Blob.
@@ -944,9 +977,8 @@ copy_to_cache(struct nfs_client *const client,
  *       Ideally we should put a cap on how many we keep outstanding with a
  *       single file.
  */
-static void sync_membuf(const struct bytes_chunk& bc,
-                        struct nfs_client *client,
-                        fuse_ino_t ino)
+void rpc_task::sync_membuf(struct bytes_chunk& bc,
+                           fuse_ino_t ino)
 {
     /*
      * Get the underlying membuf for bc.
@@ -954,7 +986,6 @@ static void sync_membuf(const struct bytes_chunk& bc,
      * to a smaller window.
      */
     struct membuf *mb = bc.get_membuf();
-    struct rpc_task *flush_task = nullptr;
 
     // Verify the mb.
     assert(mb != nullptr);
@@ -972,22 +1003,23 @@ static void sync_membuf(const struct bytes_chunk& bc,
      * Note that we allocate the rpc_task for flush before the lock as it may
      * block.
      */
-    if (!mb->is_dirty() || mb->is_flushing()) {
+    if (!mb->is_dirty() || (mb->is_flushing() && rpc_api->pvt == nullptr)) {
+        free_rpc_task();
         return;
     }
 
-    flush_task = client->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
-    flush_task->init_flush(nullptr /* fuse_req */, ino);
-    flush_task->set_op_type(FUSE_FLUSH);
+    if (rpc_api->pvt == nullptr) {
+        mb->set_locked();
+    }
 
-    mb->set_locked();
-
-    if (mb->is_dirty() && !mb->is_flushing()) {
+    if ((mb->is_dirty() && !mb->is_flushing()) || (rpc_api->pvt != nullptr)) {
         WRITE3args args;
         struct rpc_pdu *pdu;
+        struct write_context *ctx;
 
         // Never ever write non-uptodate membufs.
         assert(mb->is_uptodate());
+        assert(mb->is_dirty());
 
         // Fill the WRITE RPC arguments.
         args.file = client->get_nfs_inode_from_ino(ino)->get_fh();
@@ -997,8 +1029,16 @@ static void sync_membuf(const struct bytes_chunk& bc,
         args.data.data_len = mb->length;
         args.data.data_val = (char *) mb->buffer;
 
-        struct write_context *cb_context =
-            new write_context(bc, flush_task, ino);
+        if (rpc_api->pvt == nullptr) {
+            ctx = new write_context(bc, this, ino);
+            rpc_api->pvt = (void *) ctx;
+            bc.pvt = 0;
+        } else {
+            ctx = (write_context *)rpc_api->pvt;
+            ctx->set_task(this);
+        }
+
+        rpc_api->bc = &(ctx->get_bytes_chunk());
 
         // Set flag to flushing.
         mb->set_flushing();
@@ -1006,9 +1046,9 @@ static void sync_membuf(const struct bytes_chunk& bc,
         bool rpc_retry;
         do {
             rpc_retry = false;
-            if ((pdu = rpc_nfs3_write_task(flush_task->get_rpc_ctx(),
+            if ((pdu = rpc_nfs3_write_task(get_rpc_ctx(),
                                     write_callback, &args,
-                                    cb_context)) == NULL) {
+                                    ctx)) == NULL) {
                 /*
                  * Most common reason for this is memory allocation failure,
                  * hence wait for some time before retrying. Also block the
@@ -1022,13 +1062,13 @@ static void sync_membuf(const struct bytes_chunk& bc,
                           "after 5 secs!");
                 ::sleep(5);
             } else {
-                flush_task->get_stats().on_rpc_issue(
+                get_stats().on_rpc_issue(
                     rpc_pdu_get_req_size(pdu));
             }
         } while (rpc_retry);
     } else {
         mb->clear_locked();
-        flush_task->free_rpc_task();
+        free_rpc_task();
     }
 }
 
@@ -1066,45 +1106,28 @@ void rpc_task::run_write()
      * membufs. We don't wait for the writes to actually finish, which means
      * we support buffered writes.
      */
-    bc_vec = copy_to_cache(get_client(), ino, bufv, offset, length, error_code);
+    bc_vec = copy_to_cache(this, ino, bufv, offset, length, error_code);
+    if (error_code != 0) {
+        reply_error(error_code);
+        return;
+    }
+
     assert(bc_vec.size() > 0);
 
-    /*
-     * Increase the backend read count, so that we issue all backend reads
-     * before sending reply.
-     */
-    num_ongoing_backend_reads++;
-
-    /*
-     * Offset in request buffer.
-     */
-    size_t buffer_offset = 0;
-
     for (bytes_chunk& bc : bc_vec) {
-        // Get the membuf from bc.
-        struct membuf* mb = bc.get_membuf();
+        /*
+         * Create the flush task to carry out the write.
+         */
+        struct rpc_task *flush_task =
+            get_client()->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
+        flush_task->init_flush(nullptr /* fuse_req */, rpc_api->flush_task.get_ino());
+        flush_task->rpc_api->pvt = nullptr;
 
-        if (mb->is_dirty()) {
-            // Flush the membuf to backend.
-            sync_membuf(bc, get_client(), ino);
-        } else {
-            /*
-             * Issue the read for the membuf before writing on it.
-             * read_modified_write() checks if it's already upto date or not.
-             */
-            read_modified_write(bc, buffer_offset);
-            AZLogDebug("Issued Read Modified Write");
-        }
-        buffer_offset += bc.length;
-
-        // offset can never be more than the buffer.
-        assert(buffer_offset <= length);
+        flush_task->sync_membuf(bc, ino);
     }
 
-    if (--num_ongoing_backend_reads == 0) {
-        // Send reply to original request without waiting for the backend write to complete.
-        reply_write(length);
-    }
+    // Send reply to original request without waiting for the backend write to complete.
+    reply_write(length);
 }
 
 void rpc_task::run_flush()
@@ -1130,19 +1153,27 @@ void rpc_task::run_flush()
     }
 
     // Get the dirty bytes_chunk from the filecache handle.
-    const std::vector<bytes_chunk> bc_vec = filecache_handle->get_dirty_bc();
+    std::vector<bytes_chunk> bc_vec = filecache_handle->get_dirty_bc();
 
     // Flush dirty membufs to backend.
-    for (const bytes_chunk& bc : bc_vec) {
+    for (bytes_chunk& bc : bc_vec) {
+        /*
+         * Create the flush task to carry out the write.
+         */
+        struct rpc_task *flush_task =
+            get_client()->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
+        flush_task->init_flush(nullptr /* fuse_req */, rpc_api->flush_task.get_ino());
+        flush_task->rpc_api->pvt = nullptr;
+
         // Flush the membuf to backend.
-        sync_membuf(bc, client, ino);
+        flush_task->sync_membuf(bc, ino);
     }
 
     /*
      * Our caller expects us to return only after the flush completes.
      * Wait for all the membufs to flush and get result back.
      */
-    for (const bytes_chunk &bc : bc_vec) {
+    for (bytes_chunk &bc : bc_vec) {
         struct membuf *mb = bc.get_membuf();
         assert(mb != nullptr);
 
@@ -1839,283 +1870,6 @@ struct read_context
     }
 };
 
-static void read_modified_write_callback(
-    struct rpc_context *rpc,
-    int rpc_status,
-    void *data,
-    void *private_data)
-{
-    struct read_modified_write_context *ctx = (read_modified_write_context*) private_data;
-    rpc_task *task = ctx->task;
-    assert(task->magic == RPC_TASK_MAGIC);
-
-    rpc_task *parent_task = task->rpc_api->parent_task;
-
-    /*
-     * Only child tasks can issue the read RPC, hence the callback should
-     * be called only for them.
-     */
-    assert(parent_task->magic == RPC_TASK_MAGIC);
-    assert(parent_task->get_op_type() == FUSE_WRITE);
-    assert(task->get_op_type() == FUSE_READ);
-    assert(parent_task->num_ongoing_backend_reads > 0);
-    assert(task->num_ongoing_backend_reads == 0);
-
-    struct bytes_chunk *bc = ctx->bc;
-    struct membuf *mb = bc->get_membuf();
-
-    assert(bc->length > 0);
-    assert(mb->length > 0);
-
-    const char* errstr;
-    auto res = (READ3res*)data;
-    const int status = (task->status(rpc_status, NFS_STATUS(res), &errstr));
-    fuse_ino_t ino = task->rpc_api->read_task.get_ino();
-    struct nfs_inode *inode = task->get_client()->get_nfs_inode_from_ino(ino);
-    auto filecache_handle = inode->filecache_handle;
-    const uint64_t issued_offset = mb->offset + bc->pvt;
-    const uint64_t issued_length = mb->length - bc->pvt;
-
-    /*
-     * Now that the request has completed, we can query libnfs for the
-     * dispatch time.
-     */
-    task->get_stats().on_rpc_complete(
-        rpc_pdu_get_resp_size(rpc_get_pdu(rpc)),
-        rpc_pdu_get_dispatch_usecs(rpc_get_pdu(rpc)),
-        NFS_STATUS(res));
-
-    if (status == 0) {
-        assert((bc->pvt == 0) || (bc->num_backend_calls_issued > 1));
-
-        // We should never get more data than what we requested.
-        assert(res->READ3res_u.resok.count <= issued_length);
-
-        const bool is_partial_read = !res->READ3res_u.resok.eof &&
-            (res->READ3res_u.resok.count < issued_length);
-
-        // Update bc->pvt with fresh bytes read in this call.
-        bc->pvt += res->READ3res_u.resok.count;
-        assert(bc->pvt <= bc->length);
-
-        AZLogDebug("[{}] read_callback: {}Read completed for offset: {} "
-                   " size: {} Bytes read: {} eof: {}, total bytes read till "
-                   "now: {} of {} for [{}, {}) num_backend_calls_issued: {}",
-                   ino,
-                   is_partial_read ? "Partial " : "",
-                   issued_offset,
-                   issued_length,
-                   res->READ3res_u.resok.count,
-                   res->READ3res_u.resok.eof,
-                   bc->pvt,
-                   mb->length,
-                   mb->offset,
-                   mb->offset + mb->length,
-                   bc->num_backend_calls_issued);
-
-        /*
-         * In case of partial read, issue read for the remaining.
-         */
-        if (is_partial_read) {
-            const off_t new_offset = mb->offset + bc->pvt;
-            const size_t new_size = mb->length - bc->pvt;
-
-            // Create a new child task to carry out this request.
-            struct rpc_task *child_tsk =
-                task->get_client()->get_rpc_task_helper()->alloc_rpc_task(FUSE_READ);
-
-            child_tsk->init_read(
-                task->rpc_api->req,
-                task->rpc_api->read_task.get_ino(),
-                new_size,
-                new_offset,
-                task->rpc_api->read_task.get_fuse_file());
-
-            /*
-             * Set the parent task of the child to the parent of the
-             * current RPC task. This is required if the current task itself
-             * if one of the child tasks running part of the fuse read request.
-             */
-            child_tsk->rpc_api->parent_task = parent_task;
-            child_tsk->rpc_api->bc = bc;
-
-            /*
-             * TODO: To avoid allocating a new read_context we can reuse the
-             *       existing contest but we have to update the task member.
-             */
-            struct read_modified_write_context *new_ctx =
-                new read_modified_write_context(child_tsk, bc, ctx->offset);
-
-            bool rpc_retry;
-            READ3args new_args;
-
-            new_args.file = inode->get_fh();
-            new_args.offset = new_offset;
-            new_args.count = new_size;
-
-            bc->num_backend_calls_issued++;
-
-            AZLogDebug("[{}] Issuing partial read at offset: {} size: {}"
-                       " for [{}, {})",
-                       ino,
-                       new_offset,
-                       new_size,
-                       mb->offset,
-                       mb->offset + mb->length);
-
-            do {
-                /*
-                 * We have identified partial read case where the
-                 * server has returned fewer bytes than requested.
-                 * Fuse cannot accept fewer bytes than requested,
-                 * unless it's an eof or error.
-                 * Hence we will issue read for the remaining.
-                 *
-                 * Note: It is okay to issue a read call directly here
-                 *       as we are holding all the needed locks and refs.
-                 */
-                rpc_pdu *pdu = nullptr;
-                rpc_retry = false;
-                if ((pdu = rpc_nfs3_read_task(
-                        child_tsk->get_rpc_ctx(),
-                        read_modified_write_callback,
-                        mb->buffer + bc->pvt,
-                        new_size,
-                        &new_args,
-                        (void *) new_ctx)) == NULL) {
-                    /*
-                     * Most common reason for this is memory allocation failure,
-                     * hence wait for some time before retrying. Also block the
-                     * current thread as we really want to slow down things.
-                     *
-                     * TODO: For soft mount should we fail this?
-                     */
-                    rpc_retry = true;
-
-                    AZLogWarn("rpc_nfs3_read_task failed to issue, retrying "
-                              "after 5 secs!");
-                    ::sleep(5);
-                } else {
-                    child_tsk->get_stats().on_rpc_issue(
-                        rpc_pdu_get_req_size(pdu));
-                }
-            } while (rpc_retry);
-
-            delete ctx;
-
-            // Free the current RPC task as it has done its bit.
-            task->free_rpc_task();
-
-            /*
-             * Return from the callback here. The rest of the callback
-             * will be processed once this partial read completes.
-             */
-            return;
-        }
-
-        /*
-         * We should never return lesser bytes to the fuse than requested,
-         * unless error or eof is encountered after this point.
-         */
-        assert((mb->length == bc->pvt) || res->READ3res_u.resok.eof);
-
-        if (mb->length == bc->pvt) {
-            assert(!bc->get_membuf()->is_uptodate());
-
-            // copy the buffer to chunk.
-            struct fuse_bufvec *bufv = parent_task->rpc_api->write_task.get_buffer_vector();
-            const char *buf = (char *) bufv->buf[bufv->idx].mem + bufv->off;
-
-            /*
-            * Copy from the write buffer to bc.
-            * Set the membuf dirty and release the lock.
-            * sync_membuf() take a lock if required, it can happen flush call
-            * come and start flushing.
-            */
-            ::memcpy(bc->get_buffer(), &buf[ctx->offset], bc->length);
-            bc->get_membuf()->set_dirty();
-            bc->get_membuf()->set_uptodate();
-            bc->get_membuf()->clear_locked();
-            sync_membuf(*bc, task->get_client(), ino);
-
-        } else {
-            /*
-             * If we got eof in a partial read, release the non-existent
-             * portion of the chunk.
-             */
-            assert(0);
-        }
-    } else {
-        AZLogError("[{}] Read failed for offset: {} size: {} "
-                   "total bytes read till now: {} of {} for [{}, {}) "
-                   "num_backend_calls_issued: {} error: {}",
-                   ino,
-                   issued_offset,
-                   issued_length,
-                   bc->pvt,
-                   mb->length,
-                   mb->offset,
-                   mb->offset + mb->length,
-                   bc->num_backend_calls_issued,
-                   errstr);
-        /*
-         * In case of error we can't proceed further.
-         * Release the lock on membuf and decrement the inuse count.
-         * Release the bytes_chunk from the map.
-         */
-        bc->get_membuf()->clear_locked();
-        bc->get_membuf()->clear_inuse();
-
-        filecache_handle->release(bc->offset, bc->length);
-    }
-
-    // Free the context.
-    delete ctx;
-
-    // For failed status we must never mark the buffer uptodate.
-    assert(!status || !bc->get_membuf()->is_uptodate());
-
-    // Once failed, read_status remains at failed.
-    int expected = 0;
-    parent_task->read_status.compare_exchange_weak(expected, status);
-
-    /*
-     * Decrement the number of reads issued atomically and if it becomes zero
-     * it means this is the last read completing. We send the response for original
-     * write request.
-     */
-    if (--parent_task->num_ongoing_backend_reads == 0) {
-        /*
-         * Parent task must send the read response to fuse.
-         * This will also free parent_task.
-         */
-        assert(parent_task->optype == FUSE_WRITE);
-
-        if (parent_task->read_status == 0) {
-            parent_task->reply_write(parent_task->rpc_api->write_task.get_size());
-        } else {
-            parent_task->reply_error(parent_task->read_status);
-        }
-
-        // Free the task after sending the response.
-        task->free_rpc_task();
-    } else {
-        AZLogDebug("No response sent, waiting for more reads to complete."
-                   " num_ongoing_backend_reads: {}",
-                   parent_task->num_ongoing_backend_reads.load());
-
-        /*
-         * This task has completed its part of the read, free it here.
-         * When all reads complete, the parent task will be completed.
-         */
-        task->free_rpc_task();
-        return;
-    }
-
-    /*
-     * Do not access task after this point as we have freed it.
-     */
-}
 
 static void read_callback(
     struct rpc_context *rpc,
@@ -2385,7 +2139,12 @@ static void read_callback(
          * Parent task must send the read response to fuse.
          * This will also free parent_task.
          */
-        parent_task->send_read_response();
+        if (parent_task->get_op_type() == FUSE_WRITE) {
+            std::unique_lock<std::shared_mutex> lock(parent_task->_lock);
+            parent_task->cv.notify_one();
+        } else {
+            parent_task->send_read_response();
+        }
 
         // Free the task after sending the response.
         task->free_rpc_task();
@@ -2407,46 +2166,14 @@ static void read_callback(
      */
 }
 
-void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
+void rpc_task::read_modified_write(struct bytes_chunk &bc)
 {
     bool rpc_retry = false;
     const auto ino = rpc_api->write_task.get_ino();
     struct nfs_inode *inode = get_client()->get_nfs_inode_from_ino(ino);
+    struct membuf* mb = bc.get_membuf();
 
     do {
-        /*
-         * Now we are going to issue an NFS read that will read the data from
-         * the NFS server and update the buffer. Grab the membuf lock, this
-         * will be unlocked in read_modified_write_callback() once the data has been
-         * written to the buffer. After that copy buffer from write call. Set the
-         * membuf upto date and dirty.
-         *
-         * Note: This will block till the lock is obtained.
-         */
-        bc.get_membuf()->set_locked();
-
-        // Check if the buffer got updated by the time we got the lock.
-        if (bc.get_membuf()->is_uptodate()) {
-            struct fuse_bufvec *bufv = rpc_api->write_task.get_buffer_vector();
-            const char *buf = (char *) bufv->buf[bufv->idx].mem + bufv->off;
-
-            ::memcpy(bc.get_buffer(), &buf[offset], bc.length);
-            bc.get_membuf()->set_dirty();
-
-            /*
-             * Release the lock since we no longer intend on writing
-             * to this buffer. sync_membuf() take the lock if required.
-             */
-            bc.get_membuf()->clear_locked();
-            sync_membuf(bc, get_client(), ino);
-
-            AZLogDebug("Issue sync_membuf to Blob. size: {}, offset: {}",
-                       bc.get_membuf()->length,
-                       bc.get_membuf()->offset);
-
-            return;
-        }
-
         /*
          * Initiate the read on full membuf, instead of bc.
          * We need to set upto date flag, which is property of membuf.
@@ -2454,11 +2181,9 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
          */
         READ3args args;
         ::memset(&args, 0, sizeof(args));
-        struct membuf* mb = bc.get_membuf();
         args.file = inode->get_fh();
         args.offset = mb->offset;
         args.count = mb->length;
-
 
         // Create a new child task to carry out this request.
         struct rpc_task *child_tsk =
@@ -2475,8 +2200,8 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
         child_tsk->rpc_api->bc = &bc;
 
         // This will be freed in read_modified_write_callback().
-        struct read_modified_write_context *ctx =
-                new read_modified_write_context(child_tsk, &bc, offset);
+        struct read_context *ctx =
+                new read_context(child_tsk, &bc);
 
         // Increment the number of reads issued.
         num_ongoing_backend_reads++;
@@ -2489,7 +2214,7 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
 
         if (rpc_nfs3_read_task(
                 child_tsk->get_rpc_ctx(), /* This round robins request across connections */
-                read_modified_write_callback,
+                read_callback,
                 mb->buffer,
                 mb->length,
                 &args,
@@ -2501,8 +2226,16 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc, size_t offset)
             rpc_retry = true;
         }
     } while (rpc_retry);
-}
 
+    std::unique_lock<std::shared_mutex> lock(_lock);
+
+    while(!mb->is_uptodate() && read_status == 0) {
+        if (!cv.wait_for(lock, std::chrono::seconds(30),
+                    [&] { return (!mb->is_uptodate() && read_status == 0); })) {
+            AZLogWarn("Timed out waiting for read to complete, re-trying!");
+        }
+    }
+}
 
 void rpc_task::read_from_server(struct bytes_chunk &bc)
 {
@@ -2653,6 +2386,13 @@ void rpc_task::free_rpc_task()
         read_status = 0;
         bc_vec.clear();
         rpc_api->parent_task = nullptr;
+        break;
+    case FUSE_WRITE:
+    case FUSE_FLUSH:
+        if (rpc_api) {
+            delete rpc_api;
+            this->rpc_api = nullptr;
+        }
         break;
     default :
         break;
