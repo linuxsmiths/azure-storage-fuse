@@ -738,6 +738,9 @@ void nfs_client::jukebox_read(struct api_task_info *rpc_api)
     assert(rpc_api->parent_task->magic == RPC_TASK_MAGIC);
     child_tsk->rpc_api->parent_task = rpc_api->parent_task;
 
+    assert(rpc_api->bc != nullptr);
+    child_tsk->rpc_api->bc = rpc_api->bc;
+
     [[maybe_unused]]  const struct rpc_task *const parent_task =
         child_tsk->rpc_api->parent_task;
 
@@ -754,8 +757,6 @@ void nfs_client::jukebox_read(struct api_task_info *rpc_api)
             parent_task->rpc_api->read_task.get_offset());
     assert(child_tsk->rpc_api->read_task.get_size() <=
             parent_task->rpc_api->read_task.get_size());
-
-    assert(rpc_api->bc != nullptr);
 
     // Jukebox retry is for an existing request issued to the backend.
     assert(rpc_api->bc->num_backend_calls_issued > 0);
