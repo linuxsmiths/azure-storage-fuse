@@ -1039,6 +1039,11 @@ public:
     std::atomic<int> num_ongoing_backend_reads = 0;
     std::atomic<int> read_status = 0;
 
+    // Condition variable to wait for in-line read task for read-modified-write.
+    std::condition_variable_any cv;
+    std::shared_mutex _lock;
+    bool sync_read_done = false;
+
     /*
      * This is currently valid only for reads.
      * This contains vector of byte chunks which is returned by making a call
@@ -1523,6 +1528,7 @@ public:
                          int count,
                          uint64_t offset,
                          uint64_t length);
+    void read_modified_write(struct bytes_chunk &bc);
 };
 
 class rpc_task_helper
