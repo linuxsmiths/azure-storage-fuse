@@ -390,6 +390,11 @@ public:
         fuse_ino_t parent_ino,
         const char* name);
 
+    void access(
+        fuse_req_t req,
+        fuse_ino_t ino,
+        int mask);
+
     void write(
         fuse_req_t req,
         fuse_ino_t ino,

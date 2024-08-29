@@ -468,6 +468,14 @@ void nfs_client::lookup(fuse_req_t req, fuse_ino_t parent_ino, const char* name)
     tsk->run_lookup();
 }
 
+void nfs_client::access(fuse_req_t req, fuse_ino_t ino, int mask)
+{
+    struct rpc_task *tsk = rpc_task_helper->alloc_rpc_task(FUSE_ACCESS);
+
+    tsk->init_access(req, ino, mask);
+    tsk->run_access();
+}
+
 void nfs_client::flush(fuse_req_t req, fuse_ino_t ino)
 {
     struct rpc_task *tsk = rpc_task_helper->alloc_rpc_task(FUSE_FLUSH);
