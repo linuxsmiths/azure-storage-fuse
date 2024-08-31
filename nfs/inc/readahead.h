@@ -265,6 +265,19 @@ public:
         ra_ongoing -= length;
     }
 
+    bool in_ra_window(uint64_t offset, uint64_t length) const
+    {
+        if (last_byte_readahead == 0)
+            return false;
+
+        const uint64_t le = offset;
+        const uint64_t re = offset + length;
+        const uint64_t lra = max_byte_read;
+        const uint64_t rra = max_byte_read + ra_bytes;
+
+        return (le >= lra && le < rra) || (re >= lra && re < rra);
+    }
+
     /**
      * XXX This is provided as a quick hack to reset readahead state on
      *     file open so that the access to the file using the new handle

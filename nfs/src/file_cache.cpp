@@ -5,6 +5,7 @@
 
 #include "aznfsc.h"
 #include "file_cache.h"
+#include "nfs_inode.h"
 
 /*
  * This enables debug logs and also runs the self tests.
@@ -1482,8 +1483,8 @@ void bytes_chunk_cache::inline_prune()
     AZLogDebug("[{}] inline_prune(): Inline prune goal of {:0.2f} MB",
                fmt::ptr(this), inline_bytes / (1024 * 1024.0));
 
-    uint32_t inuse = 0, dirty = 0;
-    uint64_t inuse_bytes = 0, dirty_bytes = 0;
+    uint32_t inuse = 0, dirty = 0, inra = 0;
+    uint64_t inuse_bytes = 0, dirty_bytes = 0, inra_bytes = 0;
 
     for (auto it = chunkmap.cbegin(), next_it = it;
          (it != chunkmap.cend()) && (pruned_bytes < inline_bytes);
@@ -1491,6 +1492,15 @@ void bytes_chunk_cache::inline_prune()
         ++next_it;
         const struct bytes_chunk *bc = &(it->second);
         const struct membuf *mb = bc->get_membuf();
+
+        if (inode->in_ra_window(mb->offset, mb->length)) {
+            AZLogDebug("[{}] inline_prune(): skipping as membuf(offset={}, "
+                       "length={}) lies in RA window",
+                       fmt::ptr(this), mb->offset, mb->length);
+            inra++;
+            inra_bytes += mb->allocated_length;
+            continue;
+        }
 
         /*
          * Possibly under IO.
@@ -1558,15 +1568,18 @@ void bytes_chunk_cache::inline_prune()
 
     if (pruned_bytes < inline_bytes) {
         AZLogDebug("Could not meet inline prune goal, pruned {} of {} bytes "
-                   "[inuse={}/{}, dirty={}/{}]",
+                   "[inuse={}/{}, dirty={}/{}, inra={}/{}]",
                    pruned_bytes, inline_bytes,
                    inuse, inuse_bytes,
-                   dirty, dirty_bytes);
+                   dirty, dirty_bytes,
+                   inra, inra_bytes);
     } else {
-        AZLogDebug("Successfully pruned {} bytes [inuse={}/{}, dirty={}/{}]",
+        AZLogDebug("Successfully pruned {} bytes [inuse={}/{}, dirty={}/{}, "
+                   "inra={}/{}]",
                    pruned_bytes,
                    inuse, inuse_bytes,
-                   dirty, dirty_bytes);
+                   dirty, dirty_bytes,
+                   inra, inra_bytes);
     }
 }
 
@@ -1901,7 +1914,7 @@ int bytes_chunk_cache::unit_test()
 #if 0
     bytes_chunk_cache cache;
 #else
-    bytes_chunk_cache cache("/tmp/bytes_chunk_cache");
+    bytes_chunk_cache cache(nullptr, "/tmp/bytes_chunk_cache");
 #endif
 
     std::vector<bytes_chunk> v;
