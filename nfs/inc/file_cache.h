@@ -95,6 +95,7 @@ namespace MB_Flag {
        Locked   = (1 << 1), // Exclusive access for updating membuf data.
        Dirty    = (1 << 2), // Data in membuf is newer than the Blob.
        Flushing = (1 << 3), // Data from dirty membuf is being synced to Blob.
+       PartialSync  = (1 << 4), // Partial Sync membuf to Blob.
     };
 }
 
@@ -270,6 +271,14 @@ struct membuf
 
     void set_flushing();
     void clear_flushing();
+
+    bool is_partial_sync() const
+    {
+        return (flag & MB_Flag::PartialSync);
+    }
+
+    void set_partial_sync();
+    void clear_partial_sync();
 
     bool is_inuse() const
     {
@@ -511,6 +520,9 @@ public:
      */
     bool is_empty = true;
 
+
+    bool is_eof = false;
+
     /**
      * Return membuf corresponding to this bytes_chunk.
      * This will be used by caller to synchronize operations on the membuf.
@@ -621,6 +633,7 @@ public:
                     rhs.is_empty)
 
     {
+        is_eof = rhs.is_eof;
         pvt = rhs.pvt;
         num_backend_calls_issued = rhs.num_backend_calls_issued;
     }

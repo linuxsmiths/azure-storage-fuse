@@ -412,6 +412,11 @@ static void lookup_callback(
  */
 #define MAX_RPC_IOVEC_COUNT 1000
 
+#define CLEAR_DIRTY(mb) \
+    do { \
+        mb->is_dirty() ? mb->clear_dirty() : mb->clear_partial_sync(); \
+    } while (0)
+
 /*
  * Called when libnfs completes a WRITE_IOV RPC.
  */
@@ -494,9 +499,10 @@ static void write_iov_callback(
                     struct membuf* mb = it->get_membuf();
                     assert(mb != nullptr);
                     assert(mb->is_inuse() && mb->is_locked());
-                    assert(mb->is_flushing() && mb->is_dirty() && mb->is_uptodate());
+                    assert(mb->is_flushing() &&
+                            ((mb->is_dirty() && mb->is_uptodate()) || mb->is_partial_sync()));
 
-                    mb->clear_dirty();
+                    CLEAR_DIRTY(mb);
                     mb->clear_flushing();
                     mb->clear_locked();
                     mb->clear_inuse();
@@ -557,14 +563,19 @@ static void write_iov_callback(
         inode->set_write_error(status);
     }
 
+    /*
+     * Free the bytes_chunk which are written fully.
+     */
     for (const bytes_chunk& bc : bc_vec)
     {
         struct membuf* mb = bc.get_membuf();
         assert(mb != nullptr);
         assert(mb->is_inuse() && mb->is_locked());
-        assert(mb->is_flushing() && mb->is_dirty() && mb->is_uptodate());
+        assert(mb->is_flushing() &&
+                ((mb->is_dirty() && mb->is_uptodate()) || mb->is_partial_sync()));
+
         if (status == 0) {
-            mb->clear_dirty();
+            CLEAR_DIRTY(mb);
         }
         mb->clear_flushing();
         mb->clear_locked();
@@ -662,9 +673,8 @@ void rpc_task::resissue_write_iovec(std::vector<bytes_chunk>& bc_vec,
         // Verify the mb.
         assert(mb != nullptr);
         assert(mb->is_inuse());
-        assert(bc.maps_full_membuf());
         assert(mb->is_locked());
-        assert(mb->is_dirty() && mb->is_flushing());
+        assert((mb->is_dirty() || mb->is_partial_sync()) && mb->is_flushing());
 
         if (start_off == 0 && length == 0) {
             assert(bc.length > 0);
@@ -696,7 +706,7 @@ void rpc_task::resissue_write_iovec(std::vector<bytes_chunk>& bc_vec,
  */
 static void create_write_iovec(const std::vector<bytes_chunk>& bc_vec,
                                struct nfs_client *client,
-                               fuse_ino_t ino)
+                               fuse_ino_t ino, bool is_flush)
 {
     struct iovec io_vec[MAX_RPC_IOVEC_COUNT];
     struct nfs_inode *inode = client->get_nfs_inode_from_ino(ino);
@@ -714,7 +724,6 @@ static void create_write_iovec(const std::vector<bytes_chunk>& bc_vec,
         // Verify the mb.
         assert(mb != nullptr);
         assert(mb->is_inuse());
-        assert(bc.maps_full_membuf());
 
         /*
          * Lock the membuf. If multiple writer threads want to flush the same
@@ -728,21 +737,26 @@ static void create_write_iovec(const std::vector<bytes_chunk>& bc_vec,
          * Note that we allocate the rpc_task for flush before the lock as it may
          * block.
          */
-        if (mb->is_flushing() || !mb->is_dirty()) {
+        if (mb->is_flushing() || (!mb->is_dirty() && !mb->is_partial_sync())) {
             // Issue write if any.
             goto issue_write;
         }
 
         mb->set_locked();
-        if (mb->is_flushing() || !mb->is_dirty()) {
+        if (mb->is_flushing() || (!mb->is_dirty() && !mb->is_partial_sync())) {
             mb->clear_locked();
 
             // Issue write if any.
             goto issue_write;
         }
 
+        if (is_flush) {
+            // Take extra reference for the flush.
+            mb->set_inuse();
+        }
+
         // Never ever write non-uptodate membufs.
-        assert(mb->is_uptodate());
+        assert(mb->is_uptodate() || bc.is_eof == true);
         assert(bc.pvt == 0);
 
         // Insert the first IO in io_vec.
@@ -1702,16 +1716,16 @@ static void read_modified_callback(
                        task->rpc_api->read_task.get_size());
 
             bc->get_membuf()->set_uptodate();
-        } else {
+        } else if (res->READ3res_u.resok.eof) {
             /*
-             * If we got eof in a partial read, release the non-existent
-             * portion of the chunk.
+             * If we got eof in a partial read, No need to try the release the non-existent
+             * portion of the chunk as we are not the owner of the chunk.
              */
-            if (bc->is_empty && (bc->length > bc->pvt) &&
-                res->READ3res_u.resok.eof) {
-                filecache_handle->release(mb->offset + bc->pvt,
-                                          mb->length - bc->pvt);
-            }
+            AZLogDebug("[{}] Partial read with eof. offset: {}, length: {}",
+                       ino,
+                       mb->offset + bc->pvt,
+                       mb->length - bc->pvt);
+            bc->is_eof = true;
         }
     } else if (NFS_STATUS(res) == NFS3ERR_JUKEBOX) {
         task->get_client()->jukebox_retry(task);
@@ -1751,6 +1765,7 @@ static void read_modified_callback(
      */
     if (--parent_task->num_ongoing_backend_reads == 0) {
         std::unique_lock<std::shared_mutex> lock(parent_task->_lock);
+        parent_task->sync_read_done = true;
         parent_task->cv.notify_one();
 
         // Free the child task after sending the response.
@@ -1834,6 +1849,8 @@ void rpc_task::read_modified_write(struct bytes_chunk &bc)
         }
     } while (rpc_retry);
     
+    sync_read_done = false;
+
     std::unique_lock<std::shared_mutex> lock(_lock);
     while(sync_read_done == false) {
         if (!cv.wait_for(lock, std::chrono::seconds(30),
@@ -1889,11 +1906,9 @@ copy_to_cache(struct rpc_task *task,
          * membuf is uptodate we can safely copy to it. In both cases the
          * membuf remains uptodate after the copy.
          */
-        //if (bc.is_empty || mb->is_uptodate()) {
-        if (0) {
+        if (bc.is_empty || mb->is_uptodate()) {
             ::memcpy(bc.get_buffer(), buf, bc.length);
             mb->set_uptodate();
-            mb->set_dirty();
         } else {
             /*
              * bc refers to part of the membuf and membuf is not uptodate.
@@ -1903,18 +1918,29 @@ copy_to_cache(struct rpc_task *task,
              * TODO: Need to issue read.
              */
             task->read_modified_write(bc);
-            assert(mb->is_uptodate() || task->read_status != 0);
+            assert(mb->is_uptodate() || task->read_status != 0 || bc.is_eof);
             if (task->read_status != 0) {
                 error = task->read_status;
             } else {
                 // buffer copy case.
                 ::memcpy(bc.get_buffer(), buf, bc.length);
-                mb->set_dirty();
             }
-            assert(0);
         }
 
-        mb->clear_locked();
+        if (bc.is_eof) {
+            // Do the write in-line as we can't set uptodate to membuf.
+            std::vector<bytes_chunk> write_bc_vec;
+            write_bc_vec.emplace_back(bc);
+            mb->set_partial_sync();
+            mb->clear_locked();
+
+            create_write_iovec(write_bc_vec, task->get_client(), ino, false);
+        } else {
+            mb->set_dirty();
+            mb->clear_locked();
+            mb->clear_inuse();
+        }
+
         buf += bc.length;
         remaining -= bc.length;
 
@@ -2003,7 +2029,7 @@ void rpc_task::run_write()
         return;
     }
 
-    create_write_iovec(bc_vec, client, ino);
+    create_write_iovec(bc_vec, client, ino, false);
 #else
     std::vector<bytes_chunk> bc_vec
         = copy_to_cache(this, ino, bufv, offset, length, error_code, &extent_left, &extent_right);
@@ -2066,7 +2092,7 @@ void rpc_task::run_flush()
     std::vector<bytes_chunk> bc_vec = filecache_handle->get_dirty_bc();
 #ifdef WRITE_IOV_CHANGE
     // Flush dirty membufs to backend.
-    create_write_iovec(bc_vec, client, ino);
+    create_write_iovec(bc_vec, client, ino, true);
 #else
     // Flush dirty membufs to backend.
     for (bytes_chunk& bc : bc_vec) {
@@ -2111,6 +2137,7 @@ void rpc_task::run_flush()
 
         mb->clear_locked();
         mb->clear_inuse();
+        filecache_handle->release(bc.offset, bc.length);
     }
 
     reply_error(inode->get_write_error());

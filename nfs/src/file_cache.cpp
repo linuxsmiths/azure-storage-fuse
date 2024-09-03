@@ -300,7 +300,7 @@ void membuf::set_flushing()
     assert(is_locked());
     assert(is_inuse());
     // Dirty MUST be uptodate.
-    assert(is_dirty() && is_uptodate());
+    assert((is_dirty() && is_uptodate()) || is_partial_sync());
 
     flag |= MB_Flag::Flushing;
 
@@ -334,6 +334,31 @@ void membuf::clear_flushing()
     flag &= ~MB_Flag::Flushing;
 
     AZLogDebug("Clear flushing membuf [{}, {}), fd={}",
+               offset, offset+length, backing_file_fd);
+}
+
+void membuf::set_partial_sync()
+{
+    assert(is_locked());
+    assert(is_inuse());
+    assert(!is_dirty());
+    assert(!is_uptodate());
+
+    flag |= MB_Flag::PartialSync;
+
+    AZLogDebug("Set partial sync membuf [{}, {}), fd={}",
+               offset, offset+length, backing_file_fd);
+}
+
+void membuf::clear_partial_sync()
+{
+    assert(is_locked());
+    assert(is_inuse());
+    assert(is_partial_sync());
+
+    flag &= ~MB_Flag::PartialSync;
+
+    AZLogDebug("Clear partial sync membuf [{}, {}), fd={}",
                offset, offset+length, backing_file_fd);
 }
 
