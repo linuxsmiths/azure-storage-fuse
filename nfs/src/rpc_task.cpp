@@ -1578,7 +1578,7 @@ static void read_modified_callback(
 
         // Update bc->pvt with fresh bytes read in this call.
         bc->pvt += res->READ3res_u.resok.count;
-        assert(bc->pvt <= bc->length);
+        assert(bc->pvt <= mb->length);
 
         AZLogDebug("[{}] read_callback: {}Read completed for offset: {} "
                    " size: {} Bytes read: {} eof: {}, total bytes read till "
@@ -1919,12 +1919,21 @@ copy_to_cache(struct rpc_task *task,
              */
             task->read_modified_write(bc);
             assert(mb->is_uptodate() || task->read_status != 0 || bc.is_eof);
+            bc.pvt = 0;
             if (task->read_status != 0) {
                 error = task->read_status;
             } else {
                 // buffer copy case.
                 ::memcpy(bc.get_buffer(), buf, bc.length);
             }
+        }
+
+        if (error != 0) {
+            // Unlock the membuf.
+            mb->clear_locked();
+            mb->clear_inuse();
+
+            return bc_vec;
         }
 
         if (bc.is_eof) {
