@@ -376,6 +376,16 @@ int nfs_inode::flush_cache_and_wait()
 
         mb->clear_locked();
         mb->clear_inuse();
+
+        /*
+         * Release the bytes_chunk back to the filecache handle.
+         * These bytes_chunks are not needed anymore as the flush is done.
+         *
+         * Note:- We need to call release() here as well as inuse count incremented
+         *        in get_dirty_bc(), so release fail in write_callback() as
+         *        in use count not zero.
+         */
+        filecache_handle->release(bc.offset, bc.length);
     }
 
     return get_write_error();
