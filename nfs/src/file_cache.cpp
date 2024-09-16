@@ -347,6 +347,31 @@ void membuf::clear_flushing()
                offset, offset+length, backing_file_fd);
 }
 
+void membuf::set_partial_sync()
+{
+    assert(is_locked());
+    assert(is_inuse());
+    assert(!is_dirty());
+    assert(!is_uptodate());
+
+    flag |= MB_Flag::PartialSync;
+
+    AZLogDebug("Set partial sync membuf [{}, {}), fd={}",
+               offset, offset+length, backing_file_fd);
+}
+
+void membuf::clear_partial_sync()
+{
+    assert(is_locked());
+    assert(is_inuse());
+    assert(is_partial_sync());
+
+    flag &= ~MB_Flag::PartialSync;
+
+    AZLogDebug("Clear partial sync membuf [{}, {}), fd={}",
+               offset, offset+length, backing_file_fd);
+}
+
 /**
  * Try to lock the membuf and return whether we were able to lock it.
  * If membuf was already locked, this will return false and caller doesn't

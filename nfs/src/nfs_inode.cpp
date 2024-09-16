@@ -364,14 +364,14 @@ void nfs_inode::sync_membufs(std::vector<bytes_chunk> &bc_vec, bool is_flush)
          * block.
          * TODO: We don't do it currently, fix this!
          */
-        if (mb->is_flushing() || !mb->is_dirty()) {
+        if (mb->is_flushing() || (!mb->is_dirty() && !mb->is_partial_sync())) {
             mb->clear_inuse();
 
             continue;
         }
 
         mb->set_locked();
-        if (mb->is_flushing() || !mb->is_dirty()) {
+        if (mb->is_flushing() || (!mb->is_dirty() && !mb->is_partial_sync())) {
             mb->clear_locked();
             mb->clear_inuse();
 
@@ -467,33 +467,48 @@ int nfs_inode::copy_to_cache(const struct fuse_bufvec* bufv,
 
         /*
          * If we own the full membuf we can safely copy to it, also if the
-         * membuf is uptodate we can safely copy to it. In both cases the
-         * membuf remains uptodate after the copy.
+         * membuf is uptodate we can safely copy to it. If bc maps full membuf
+         * then also we can copy data and mark it uptodate. In all these cases
+         * the membuf remains uptodate after the copy.
          */
-        if (bc.is_empty || mb->is_uptodate()) {
+        if (bc.is_empty || mb->is_uptodate() || bc.maps_full_membuf()) {
             assert(bc.length <= remaining);
             ::memcpy(bc.get_buffer(), buf, bc.length);
             mb->set_uptodate();
             mb->set_dirty();
+
+            /*
+             * Done with the copy, release the membuf lock and clear inuse.
+             * The membuf is marked dirty so it's safe against cache prune/release.
+             * When we decide to flush this dirty membuf that time it'll be duly
+             * locked.
+             */
+            mb->clear_locked();
+            mb->clear_inuse();
         } else {
             /*
              * bc refers to part of the membuf and membuf is not uptodate.
-             * In this case we need to read back the entire membuf and then
-             * update the part that user wants to write to.
+             * In this case we have two options
+             * - Either we read back the entire membuf, mark it upto date
+             *   and then update the part that user wants to write to and
+             *   issue backend write. In this case it may happen that the
+             *   read cannot complete as it reach eof. In that case we need
+             *   the data to membuf and sync in-line.
+             * - Or we can issue a write for the part that user wants to write
+             *   and don't mark it uptodate. If read is waiting for lock then
+             *   it'll get the data from backend and update the membuf. In this
+             *   in-line case time for which lock is held is less.
              *
-             * TODO: Need to issue read.
              */
-            assert(0);
-        }
+            AZLogWarn("[{}] membuf not uptodate!, doing in-line write for [{}, {}]",
+                       ino, bc.offset, bc.length);
+            ::memcpy(bc.get_buffer(), buf, bc.length);
+            std::vector<bytes_chunk> write_bc_vec;
+            write_bc_vec.emplace_back(bc);
+            mb->set_partial_sync();
 
-        /*
-         * Done with the copy, release the membuf lock and clear inuse.
-         * The membuf is marked dirty so it's safe against cache prune/release.
-         * When we decide to flush this dirty membuf that time it'll be duly
-         * locked.
-         */
-        mb->clear_locked();
-        mb->clear_inuse();
+            sync_membufs(write_bc_vec, false);
+        }
 
         buf += bc.length;
         assert(remaining >= bc.length);
