@@ -301,8 +301,13 @@ void membuf::set_flushing()
      */
     assert(is_locked());
     assert(is_inuse());
-    // Dirty MUST be uptodate.
-    assert(is_dirty() && is_uptodate());
+
+    /*
+     * Must be dirty and uptodate or partial_sync.
+     * Partial sync is a special case where we write some data to the
+     * Blob but not all, so we don't mark it uptodate.
+     */
+    assert((is_dirty() && is_uptodate()) || is_partial_sync());
 
     flag |= MB_Flag::Flushing;
 

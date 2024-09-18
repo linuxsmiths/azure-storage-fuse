@@ -386,7 +386,6 @@ struct bc_iovec
                     mb->clear_partial_sync();
                 }
 
-                mb->clear_dirty();
                 mb->clear_flushing();
                 mb->clear_locked();
                 mb->clear_inuse();

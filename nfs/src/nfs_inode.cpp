@@ -506,6 +506,7 @@ int nfs_inode::copy_to_cache(const struct fuse_bufvec* bufv,
             std::vector<bytes_chunk> write_bc_vec;
             write_bc_vec.emplace_back(bc);
             mb->set_partial_sync();
+            mb->clear_locked();
 
             sync_membufs(write_bc_vec, false);
         }
