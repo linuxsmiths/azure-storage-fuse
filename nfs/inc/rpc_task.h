@@ -286,7 +286,7 @@ struct bc_iovec
          */
         assert(mb->is_inuse());
         assert(mb->is_locked());
-        assert(mb->is_uptodate());
+        assert(mb->is_uptodate() || mb->is_partial_sync());
 
         // First iovec being added.
         if (iovcnt == 0) {
@@ -376,9 +376,16 @@ struct bc_iovec
                 struct membuf *mb = bc.get_membuf();
                 assert(mb != nullptr);
                 assert(mb->is_inuse() && mb->is_locked());
-                assert(mb->is_flushing() && mb->is_dirty() && mb->is_uptodate());
+                assert(mb->is_flushing() &&
+                      ((mb->is_dirty() && mb->is_uptodate()) || mb->is_partial_sync()));
+                assert(!mb->is_dirty() || !mb->is_partial_sync());
 
-                mb->clear_dirty();
+                if(mb->is_dirty()) {
+                    mb->clear_dirty();
+                } else {
+                    mb->clear_partial_sync();
+                }
+
                 mb->clear_flushing();
                 mb->clear_locked();
                 mb->clear_inuse();
@@ -454,6 +461,7 @@ struct bc_iovec
             assert(mb != nullptr);
             assert(mb->is_inuse() && mb->is_locked());
             assert(mb->is_flushing() && mb->is_dirty() && mb->is_uptodate());
+            assert(!mb->is_dirty() || !mb->is_partial_sync());
 
             mb->clear_flushing();
             mb->clear_locked();

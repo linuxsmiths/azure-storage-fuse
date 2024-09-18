@@ -93,10 +93,11 @@ class bytes_chunk_cache;
 namespace MB_Flag {
     enum : uint32_t
     {
-       Uptodate = (1 << 0), // Fit for reading.
-       Locked   = (1 << 1), // Exclusive access for updating membuf data.
-       Dirty    = (1 << 2), // Data in membuf is newer than the Blob.
-       Flushing = (1 << 3), // Data from dirty membuf is being synced to Blob.
+       Uptodate     = (1 << 0), // Fit for reading.
+       Locked       = (1 << 1), // Exclusive access for updating membuf data.
+       Dirty        = (1 << 2), // Data in membuf is newer than the Blob.
+       Flushing     = (1 << 3), // Data from dirty membuf is being synced to Blob.
+       PartialSync  = (1 << 4), // Partial Sync membuf to Blob.
     };
 }
 
@@ -277,6 +278,14 @@ struct membuf
 
     void set_flushing();
     void clear_flushing();
+
+    bool is_partial_sync() const
+    {
+        return (flag & MB_Flag::PartialSync);
+    }
+
+    void set_partial_sync();
+    void clear_partial_sync();
 
     bool is_inuse() const
     {
