@@ -924,6 +924,12 @@ void nfs_inode::purge_dnlc_nolock()
     }
 }
 
+bool nfs_inode::is_dnlc_valid()
+{
+    return (!dnlc.empty() && full_enumeration_timestamp != -1 
+            && (full_enumeration_timestamp + 60000 > get_current_msecs()));
+}
+
 /*
  * Purge the file cache.
  * TODO: For now we purge the entire cache. This can be later changed to purge

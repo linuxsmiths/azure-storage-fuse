@@ -1049,6 +1049,7 @@ void mkdir_callback(
     if (status == 0) {
         UPDATE_INODE_ATTR(inode, res->MKDIR3res_u.resok.dir_wcc.after);
 
+        inode->set_full_enumeration_timestamp();
         assert(
             res->MKDIR3res_u.resok.obj.handle_follows &&
             res->MKDIR3res_u.resok.obj_attributes.attributes_follow);
@@ -1329,6 +1330,12 @@ void rpc_task::run_lookup()
         INC_GBL_STATS(lookup_served_from_cache, 1);
         AZLogDebug("[{}/{}] Returning cached lookup", parent_ino, filename);
         get_client()->reply_entry(this, &fh, &fattr, nullptr);
+        FH_FREE(&fh);
+        return;
+    } else if (inode->is_dnlc_valid()) {
+        INC_GBL_STATS(lookup_served_from_cache, 1);
+        AZLogDebug("[{}/{}] No valid entity in cached lookup", parent_ino, filename);
+        get_client()->reply_entry(this, nullptr, nullptr, nullptr);
         FH_FREE(&fh);
         return;
     }
@@ -3044,6 +3051,8 @@ static void readdir_callback(
              * return any directory entries, but it'll set eof to true.
              * In such case, we must already have set eof and eof_cookie.
              */
+            dir_inode->set_full_enumeration_timestamp();
+
             if (eof_cookie != -1) {
                 assert(num_dirents > 0);
                 dircache_handle->set_eof(eof_cookie);
@@ -3443,6 +3452,8 @@ static void readdirplus_callback(
              * return any directory entries, but it'll set eof to true.
              * In such case, we must already have set eof and eof_cookie.
              */
+            dir_inode->set_full_enumeration_timestamp();
+
             if (eof_cookie != -1) {
                 assert(num_dirents > 0);
                 dircache_handle->set_eof(eof_cookie);

@@ -220,6 +220,9 @@ struct nfs_inode
     int64_t attr_timeout_secs = -1;
     int64_t attr_timeout_timestamp = -1;
 
+    int64_t full_enumeration_timestamp = -1;
+
+
     /*
      * Time in usecs we received the last cached write for this inode.
      * See discussion in stamp_cached_write() for details.
@@ -748,6 +751,11 @@ struct nfs_inode
         return dnlc.empty();
     }
 
+    void set_full_enumeration_timestamp()
+    {
+        full_enumeration_timestamp = get_current_msecs();
+    }
+
     /**
      * Copy application data into the inode's file cache.
      *
@@ -890,6 +898,7 @@ struct nfs_inode
      */
     void purge_dircache_nolock();
     void purge_dnlc_nolock();
+    bool is_dnlc_valid();
 
     void purge_dircache()
     {
