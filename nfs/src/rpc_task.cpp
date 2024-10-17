@@ -758,6 +758,85 @@ bool rpc_task::add_bc(const bytes_chunk& bc)
     return bciov->add_bc(bc);
 }
 
+
+static void commit_callback(
+    struct rpc_context *rpc,
+    int rpc_status,
+    void *data,
+    void *private_data)
+{
+    rpc_task *task = (rpc_task*) private_data;
+    assert(task->magic == RPC_TASK_MAGIC);
+
+    auto res = (COMMIT3res*)data;
+
+    INJECT_JUKEBOX(res, task);
+
+    const fuse_ino_t ino =
+        task->rpc_api->flush_task.get_ino();
+    struct nfs_inode *inode =
+        task->get_client()->get_nfs_inode_from_ino(ino);
+    const int status = task->status(rpc_status, NFS_STATUS(res));
+
+    /*
+     * Now that the request has completed, we can query libnfs for the
+     * dispatch time.
+     */
+    task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
+
+    if (status == 0) {
+        UPDATE_INODE_WCC(inode, res->COMMIT3res_u.resok.file_wcc);
+        task->reply_error(status);
+    } else if (NFS_STATUS(res) == NFS3ERR_JUKEBOX) {
+        task->get_client()->jukebox_retry(task);
+    } else {
+        task->reply_error(status);
+    }
+}
+
+void rpc_task::issue_commit_rpc()
+{
+    // Must only be called for a flush task.
+    assert(get_op_type() == FUSE_FLUSH);
+
+    const fuse_ino_t ino = rpc_api->flush_task.get_ino();
+    struct nfs_inode *inode = get_client()->get_nfs_inode_from_ino(ino);
+    
+    COMMIT3args args;
+    ::memset(&args, 0, sizeof(args));
+    bool rpc_retry = false;
+    
+    AZLogDebug("issue_commit_rpc");
+
+
+    args.file = inode->get_fh();
+    args.offset = 0;
+    args.count = 0;
+
+    do {
+        rpc_retry = false;
+        stats.on_rpc_issue();
+
+        if (rpc_nfs3_commit_task(get_rpc_ctx(),
+                                        commit_callback, &args,
+                                        this) == NULL) {
+            stats.on_rpc_cancel();
+            /*
+             * Most common reason for this is memory allocation failure,
+             * hence wait for some time before retrying. Also block the
+             * current thread as we really want to slow down things.
+             *
+             * TODO: For soft mount should we fail this?
+             */
+            rpc_retry = true;
+
+            AZLogWarn("rpc_nfs3_write_task failed to issue, retrying "
+                        "after 5 secs!");
+            ::sleep(5);
+        }
+    } while (rpc_retry);
+}
+
 void rpc_task::issue_write_rpc()
 {
     // Must only be called for a flush task.
@@ -783,7 +862,7 @@ void rpc_task::issue_write_rpc()
     args.file = inode->get_fh();
     args.offset = offset;
     args.count = length;
-    args.stable = FILE_SYNC;
+    args.stable = UNSTABLE;
 
     do {
         rpc_retry = false;
@@ -1628,7 +1707,7 @@ void rpc_task::run_write()
                (extent_right - extent_left),
                bytes_to_flush,
                max_dirty_extent);
-
+#if 0
     if ((extent_right - extent_left) < max_dirty_extent) {
         /*
          * Current extent is not big enough to be flushed, see if we have
@@ -1672,7 +1751,7 @@ void rpc_task::run_write()
             return;
         }
     }
-
+#endif
     std::vector<bytes_chunk> bc_vec =
         inode->filecache_handle->get_dirty_bc_range(extent_left, extent_right);
 
@@ -1696,7 +1775,12 @@ void rpc_task::run_flush()
     const fuse_ino_t ino = rpc_api->flush_task.get_ino();
     struct nfs_inode *const inode = get_client()->get_nfs_inode_from_ino(ino);
 
-    reply_error(inode->flush_cache_and_wait());
+    auto ret = inode->flush_cache_and_wait();
+    if (ret != 0) {
+        reply_error(ret);
+    }
+
+    issue_commit_rpc();
 }
 
 void rpc_task::run_getattr()
