@@ -325,7 +325,7 @@ public:
     bool get_entry_at(cookie3 cookie, std::shared_ptr<directory_entry>& dirent)
     {
         // Take shared lock on the map.
-        std::shared_lock<std::shared_mutex> lock(readdircache_lock_2);
+        AZLOCK(std::shared_lock<std::shared_mutex>, readdircache_lock, 2);
         auto it = dir_entries.find(cookie);
 
         if (it != dir_entries.end())
@@ -386,7 +386,7 @@ public:
         assert(cokieverf != nullptr);
 
         // TODO: Can this be made atomic? Get exclusive lock to update the cookie verifier.
-        std::unique_lock<std::shared_mutex> lock(readdircache_lock_2);
+        AZLOCK(std::unique_lock<std::shared_mutex>, readdircache_lock, 2);
         ::memcpy(&cookie_verifier, cokieverf, sizeof(cookie_verifier));
     }
 

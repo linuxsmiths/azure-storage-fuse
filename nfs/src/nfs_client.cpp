@@ -199,7 +199,7 @@ void nfs_client::jukebox_runner()
         int jukebox_requests;
 
         {
-            std::unique_lock<std::mutex> lock(jukebox_seeds_lock_39);
+            AZLOCK(std::unique_lock<std::mutex>, jukebox_seeds_lock, 39);
             jukebox_requests = jukebox_seeds.size();
         }
 
@@ -214,7 +214,7 @@ void nfs_client::jukebox_runner()
         }
 
         {
-            std::unique_lock<std::mutex> lock(jukebox_seeds_lock_39);
+            AZLOCK(std::unique_lock<std::mutex>, jukebox_seeds_lock, 39);
             jukebox_requests = jukebox_seeds.size();
             if (jukebox_requests == 0) {
                 continue;
@@ -231,7 +231,7 @@ void nfs_client::jukebox_runner()
          */
         std::vector<jukebox_seedinfo *> jsv;
         {
-            std::unique_lock<std::mutex> lock(jukebox_seeds_lock_39);
+            AZLOCK(std::unique_lock<std::mutex>, jukebox_seeds_lock, 39);
             while (!jukebox_seeds.empty()) {
                 struct jukebox_seedinfo *js = jukebox_seeds.front();
 
@@ -478,7 +478,7 @@ struct nfs_inode *nfs_client::__get_nfs_inode(LOC_PARAMS
      * same file is recipe for disaster.
      */
     {
-        std::shared_lock<std::shared_mutex> lock(inode_map_lock_0);
+        AZLOCK(std::shared_lock<std::shared_mutex>, inode_map_lock, 0);
 
         /*
          * Search by fileid in the multimap. Since fileid is not guaranteed to
@@ -496,7 +496,7 @@ struct nfs_inode *nfs_client::__get_nfs_inode(LOC_PARAMS
                 // File type must not change for an inode.
                 assert(inode->file_type == file_type);
 
-                std::unique_lock<std::shared_mutex> lock1(inode->ilock_1);
+                AZLOCK(std::unique_lock<std::shared_mutex>, inode->ilock, 1);
 
                 if (inode->is_forgotten()) {
                     AZLogDebug(LOC_FMT
@@ -598,7 +598,7 @@ struct nfs_inode *nfs_client::__get_nfs_inode(LOC_PARAMS
                                             is_root_inode ? FUSE_ROOT_ID : 0);
 
     {
-        std::unique_lock<std::shared_mutex> lock(inode_map_lock_0);
+        AZLOCK(std::unique_lock<std::shared_mutex>, inode_map_lock, 0);
 
         AZLogDebug(LOC_FMT
                    "[{}:{} / 0x{:08x}] Allocated new inode ({})",
@@ -631,7 +631,7 @@ struct nfs_inode *nfs_client::__get_nfs_inode(LOC_PARAMS
                  * If fattr is newer, update inode attr.
                  */
                 {
-                    std::unique_lock<std::shared_mutex> lock1(i->second->ilock_1);
+                    AZLOCK(std::unique_lock<std::shared_mutex>, i->second->ilock, 1);
 
                     const bool fattr_is_newer =
                         (compare_timespec_and_nfstime(i->second->attr.st_ctim,
@@ -1574,7 +1574,7 @@ void nfs_client::jukebox_retry(struct rpc_task *task)
         /*
          * Transfer ownership of rpc_api from rpc_task to jukebox_seedinfo.
          */
-        std::unique_lock<std::mutex> lock(jukebox_seeds_lock_39);
+        AZLOCK(std::unique_lock<std::mutex>, jukebox_seeds_lock, 39);
         jukebox_seeds.emplace(new jukebox_seedinfo(task->rpc_api));
 
         task->rpc_api = nullptr;

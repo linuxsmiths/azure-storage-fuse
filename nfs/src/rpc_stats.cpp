@@ -36,7 +36,7 @@ void rpc_stats_az::dump_stats()
      * Take exclusive lock to avoid mixing dump from simultaneous dump
      * requests.
      */
-    std::unique_lock<std::mutex> _lock(stats_lock_42);
+    AZLOCK(std::unique_lock<std::mutex>, stats_lock, 42);
 
     /*
      * Go over all connections, query libnfs for stats for each and accumulate

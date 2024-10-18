@@ -183,7 +183,7 @@ public:
              * on_rpc_complete will be called before sending response to fuse.
              * This should be okay as this will happen only in error state.
              */
-            std::unique_lock<std::mutex> _lock(stats_lock_42);
+            AZLOCK(std::unique_lock<std::mutex>, stats_lock, 42);
             auto result = opstats[optype].error_map.emplace(status, 1);
             if (!result.second) {
                 // If the key already exists, increment the error count.

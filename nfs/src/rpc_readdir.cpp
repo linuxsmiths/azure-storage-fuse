@@ -289,7 +289,7 @@ void readdirectory_cache::dnlc_add(const char *filename,
      */
     static uint64_t bigcookie = (UINT64_MAX >> 1);
 
-    std::unique_lock<std::shared_mutex> lock(readdircache_lock_2);
+    AZLOCK(std::unique_lock<std::shared_mutex>, readdircache_lock, 2);
 
     /*
      * See the directory_entry update rules in directory_entry comments.
@@ -653,7 +653,7 @@ void readdirectory_cache::clear()
     std::vector<struct nfs_inode*> tofree_vec;
 
     {
-        std::unique_lock<std::shared_mutex> lock(readdircache_lock_2);
+        AZLOCK(std::unique_lock<std::shared_mutex>, readdircache_lock, 2);
 
         eof = false;
         cache_size = 0;

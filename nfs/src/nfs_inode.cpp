@@ -821,7 +821,7 @@ void nfs_inode::revalidate(bool force)
      * has changed that what we have cached, and if so update the cached
      * attributes and invalidate the cache as appropriate.
      */
-    std::unique_lock<std::shared_mutex> lock(ilock_1);
+    AZLOCK(std::unique_lock<std::shared_mutex>, ilock, 1);
 
     if (!update_nolock(&fattr)) {
         /*

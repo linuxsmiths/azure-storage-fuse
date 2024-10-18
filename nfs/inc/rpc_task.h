@@ -2366,14 +2366,14 @@ public:
 
     int get_free_idx()
     {
-        std::unique_lock<std::shared_mutex> lock(task_index_lock_41);
+        AZLOCK(std::unique_lock<std::shared_mutex>, task_index_lock, 41);
 
         // Wait until a free rpc task is available.
         while (free_task_index.empty()) {
 #ifdef ENABLE_PARANOID
             assert(free_task_index_set.empty());
 #endif
-            if (!cv.wait_for(lock, std::chrono::seconds(30),
+            if (!cv.wait_for(__lock, std::chrono::seconds(30),
                              [this] { return !free_task_index.empty(); })) {
                 AZLogError("Timed out waiting for free rpc_task, re-trying!");
             }
@@ -2401,7 +2401,7 @@ public:
         assert(index >= 0 && index < MAX_OUTSTANDING_RPC_TASKS);
 
         {
-            std::unique_lock<std::shared_mutex> lock(task_index_lock_41);
+            AZLOCK(std::unique_lock<std::shared_mutex>, task_index_lock, 41);
 
 #ifdef ENABLE_PARANOID
             assert(free_task_index_set.size() == free_task_index.size());

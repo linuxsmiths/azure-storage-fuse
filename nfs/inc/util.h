@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <zlib.h>
 
 #include <string>
@@ -19,6 +20,7 @@
 using namespace std::chrono;
 
 namespace aznfsc {
+
 
 /**
  * Set readahead_kb for kernel readahead.
@@ -201,6 +203,78 @@ uint32_t calculate_crc32(const unsigned char *buf, int len)
  *       retries and do not result in application failures.
  */
 bool inject_error(double pct_prob = 0);
+
+#ifdef ENABLE_PARANOID
+struct lockdep_info
+{
+    lockdep_info(uint8_t _locknum, const char *_file, int _line) :
+        magic(get_current_usecs())
+    {
+        if (locks_held & (1 << _locknum)) {
+            AZLogWarn("TOMAR: [{}] re-locking #{} @ {}:{}, locks_held: {:x}",
+                  magic, _locknum, _file, _line, locks_held);
+            curr_locknum = 255;
+            return;
+        }
+
+        curr_locknum = _locknum;
+
+        AZLogWarn("TOMAR: [{}] locking #{} @ {}:{}, locks_held: {:x}",
+                  magic, curr_locknum, _file, _line, locks_held);
+        assert(curr_locknum < 64);
+        const uint64_t homask = ~((1 << (curr_locknum+1)) - 1);
+        const uint64_t invalid_locks = (locks_held & homask);
+        if (invalid_locks) {
+            for (int i = 0; i < 64; i++) {
+                if (invalid_locks & (1 << i)) {
+                    AZLogWarn("[{}] Higher order lock #{} already held while "
+                              "holding lock of order #{}: held @ {}:{}",
+                              magic, i, curr_locknum, file[curr_locknum], line[curr_locknum]);
+                    assert(0);
+                }
+            }
+        }
+        locks_held |= (1 << curr_locknum);
+        file[curr_locknum] = _file;
+        line[curr_locknum] = _line;
+
+        AZLogWarn("TOMAR: [{}] locked #{} @ {}:{}, locks_held: {:x}",
+                  magic, curr_locknum, _file, _line, locks_held);
+    }
+
+    ~lockdep_info()
+    {
+        if (curr_locknum == 255) {
+            AZLogWarn("TOMAR: [{}] ignoring unlock, locks_held: {:x}",
+                  magic, locks_held);
+            return;
+        }
+
+        AZLogWarn("TOMAR: [{}] unlocking #{}, locks_held: {:x}",
+                  magic, curr_locknum, locks_held);
+        assert(curr_locknum < 63);
+        assert(locks_held & (1 << curr_locknum));
+        locks_held &= ~(1 << curr_locknum);
+        file[curr_locknum] = "";
+        line[curr_locknum] = -1;
+        AZLogWarn("TOMAR: [{}] unlocked #{}, locks_held: {:x}",
+                  magic, curr_locknum, locks_held);
+    }
+
+    static thread_local uint64_t locks_held;
+    static thread_local std::string file[64];
+    static thread_local int line[64];
+    uint8_t curr_locknum;
+    uint64_t magic;
+};
+
+#define AZLOCK(lock_type, lck_name, lck_num) \
+    lock_type __lock(lck_name##_##lck_num); \
+    struct lockdep_info __ldep(lck_num, __FILENAME__, __LINE__)
+#else
+#define AZLOCK(lock_type, lck_name, lck_num) \
+    lock_type __lock(lck_name##_##lck_num)
+#endif
 
 }
 

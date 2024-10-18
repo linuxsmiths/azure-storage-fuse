@@ -323,7 +323,7 @@ public:
          * We need to hold inode_map_lock_0 while we check the inode for
          * eligibility to remove (and finally remove) from the inode_map.
          */
-        std::unique_lock<std::shared_mutex> lock(inode_map_lock_0);
+        AZLOCK(std::unique_lock<std::shared_mutex>, inode_map_lock, 0);
         put_nfs_inode_nolock(inode, dropcnt);
     }
 

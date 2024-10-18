@@ -5,6 +5,12 @@
 
 namespace aznfsc {
 
+#ifdef ENABLE_PARANOID
+/* static */ thread_local uint64_t lockdep_info::locks_held = 0;
+/* static */ thread_local std::string lockdep_info::file[64];
+/* static */ thread_local int lockdep_info::line[64];
+#endif
+
 /**
  * Set readahead_kb for kernel readahead.
  * This sets the kernel readahead value of aznfsc_cfg.readahead_kb iff kernel
