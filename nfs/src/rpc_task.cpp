@@ -68,6 +68,89 @@ do { \
 #define INJECT_BAD_COOKIE(res, task) /* nothing */
 #endif
 
+#ifdef ENABLE_PRESSURE_POINTS
+#define INJECT_CREATE_FH_POPULATE_FAILURE(res, task) \
+do { \
+    /* \
+     * Must be called only for create and mknod task. \
+     */ \
+    assert(task->get_op_type() == FUSE_CREATE); \
+    if (res && (NFS_STATUS(res) == NFS3_OK)) { \
+        if (inject_error()) { \
+            AZLogWarn("[{}] PP: {} failed to populate fh, parent ino {}, filename {} ", \
+                       __FUNCTION__, \
+                       task->rpc_api->create_task.get_parent_ino(), \
+                       task->rpc_api->create_task.get_file_name()); \
+            (res)->CREATE3res_u.resok.obj.handle_follows = 0; \
+        } \
+    } \
+} while (0)
+#else
+#define INJECT_CREATE_FH_POPULATE_FAILURE(res, task) /* nothing */
+#endif
+
+#ifdef ENABLE_PRESSURE_POINTS
+#define INJECT_MKNOD_FH_POPULATE_FAILURE(res, task) \
+do { \
+    /* \
+     * Must be called only for mknod task. \
+     */ \
+    assert(task->get_op_type() == FUSE_MKNOD); \
+    if (res && (NFS_STATUS(res) == NFS3_OK)) { \
+        if (inject_error()) { \
+            AZLogWarn("[{}] PP: {} failed to populate fh, parent ino {}, filename {} ", \
+                       __FUNCTION__, \
+                       task->rpc_api->mknod_task.get_parent_ino(), \
+                       task->rpc_api->mknod_task.get_file_name()); \
+            (res)->CREATE3res_u.resok.obj.handle_follows = 0; \
+        } \
+    } \
+} while (0)
+#else
+#define INJECT_MKNOD_FH_POPULATE_FAILURE(res, task) /* nothing */
+#endif
+
+#ifdef ENABLE_PRESSURE_POINTS
+#define INJECT_MKDIR_FH_POPULATE_FAILURE(res, task) \
+do { \
+    /* \
+     * Must be called only for mkdir task. \
+     */ \
+    assert(task->get_op_type() == FUSE_MKDIR); \
+    if (res && (NFS_STATUS(res) == NFS3_OK)) { \
+        if (inject_error()) { \
+            AZLogWarn("[{}] PP: {} failed to populate fh, parent ino {}, dirname {} ", \
+                       __FUNCTION__, \
+                       task->rpc_api->mkdir_task.get_parent_ino(), \
+                       task->rpc_api->mkdir_task.get_dir_name()); \
+            (res)->MKDIR3res_u.resok.obj.handle_follows = 0; \
+        } \
+    } \
+} while (0)
+#else
+#define INJECT_MKDIR_FH_POPULATE_FAILURE(res, task) /* nothing */
+#endif
+
+#ifdef ENABLE_PRESSURE_POINTS
+#define INJECT_SETATTR_FH_POPULATE_FAILURE(res, task) \
+do { \
+    /* \
+     * Must be called only for setattr. \
+     */ \
+    assert(task->get_op_type() == FUSE_SETATTR); \
+    if (res && (NFS_STATUS(res) == NFS3_OK)) { \
+        if (inject_error()) { \
+            AZLogWarn("[{}] PP: {} failed to populate fh, ino {}", \
+                       __FUNCTION__, \
+                       task->rpc_api->setattr_task.get_ino()); \
+            (res)->SETATTR3res_u.resok.obj_wcc.after.attributes_follow = 0; \
+        } \
+    } \
+} while (0)
+#else
+#define INJECT_SETATTR_FH_POPULATE_FAILURE(res, task) /* nothing */
+#endif
+
 /* static */
 std::atomic<int> rpc_task::async_slots = MAX_ASYNC_RPC_TASKS;
 
@@ -146,6 +229,8 @@ void rpc_task::init_lookup(fuse_req *request,
     set_fuse_req(request);
     rpc_api->lookup_task.set_file_name(name);
     rpc_api->lookup_task.set_parent_ino(parent_ino);
+    rpc_api->lookup_task.set_fuse_file(nullptr);
+    rpc_api->lookup_task.set_called_for_optype(FUSE_LOOKUP);
 
     fh_hash = get_client()->get_nfs_inode_from_ino(parent_ino)->get_crc();
 }
@@ -517,7 +602,8 @@ static void lookup_callback(
      * Kernel must cache -ve entries.
      */
     const bool cache_negative =
-        (aznfsc_cfg.lookupcache_int == AZNFSCFG_LOOKUPCACHE_ALL);
+        ((aznfsc_cfg.lookupcache_int == AZNFSCFG_LOOKUPCACHE_ALL) &&
+        (task->rpc_api->lookup_task.get_called_for_optype() == FUSE_LOOKUP));
 
     /*
      * Now that the request has completed, we can query libnfs for the
@@ -547,7 +633,7 @@ static void lookup_callback(
             task,
             &res->LOOKUP3res_u.resok.object,
             &res->LOOKUP3res_u.resok.obj_attributes.post_op_attr_u.attributes,
-            nullptr);
+            task->rpc_api->lookup_task.get_fuse_file());
     } else if (NFS_STATUS(res) == NFS3ERR_JUKEBOX) {
         task->get_client()->jukebox_retry(task);
     } else {
@@ -886,6 +972,8 @@ static void createfile_callback(
         task->get_client()->get_nfs_inode_from_ino(ino);
     const int status = task->status(rpc_status, NFS_STATUS(res));
 
+    INJECT_CREATE_FH_POPULATE_FAILURE(res, task);
+
     /*
      * Now that the request has completed, we can query libnfs for the
      * dispatch time.
@@ -893,6 +981,49 @@ static void createfile_callback(
     task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
 
     if (status == 0) {
+        if (!res->CREATE3res_u.resok.obj.handle_follows) {
+            /*
+             * If the server doesn't send the filehandle (which is perfectly
+             * valid), make a LOOKUP RPC request to query the filehandle and
+             * pass that to fuse.
+             */
+            AZLogWarn("CreateFile failed to return filehandle, req={}, "
+                "parent_ino={}, name={}. Issuing lookup.",
+                fmt::ptr(task->get_fuse_req()),
+                task->rpc_api->create_task.get_parent_ino(),
+                task->rpc_api->create_task.get_file_name());
+
+            struct fuse_req *req = task->get_fuse_req();
+            fuse_ino_t parent_ino = task->rpc_api->create_task.get_parent_ino();
+            char *file_name = ::strdup(
+                task->rpc_api->create_task.get_file_name());
+            struct fuse_file_info *fusefile =
+                task->rpc_api->create_task.get_fuse_file();
+
+            /*
+             * Free the current task as the response will be sent by the
+             * lookup task made below.
+             * Note: task should not be accessed after this.
+             */
+            task->free_rpc_task();
+
+            struct rpc_task *lookup_tsk =
+                    task->get_client()->get_rpc_task_helper()->alloc_rpc_task(
+                        FUSE_LOOKUP);
+            lookup_tsk->init_lookup(
+                req,
+                file_name,
+                parent_ino);
+
+            // Mark the lookup task as being called to populate the fh by create.
+            lookup_tsk->rpc_api->lookup_task.set_called_for_optype(FUSE_CREATE);
+            lookup_tsk->rpc_api->lookup_task.set_fuse_file(fusefile);
+
+            lookup_tsk->run_lookup();
+            ::free(file_name);
+            return;
+        }
+
         /*
          * See comment above readdirectory_cache::lookuponly, why we don't need
          * to call UPDATE_INODE_ATTR() to invalidate the readdirectory_cache,
@@ -910,18 +1041,6 @@ static void createfile_callback(
         } else {
             UPDATE_INODE_ATTR(inode, res->CREATE3res_u.resok.dir_wcc.after);
         }
-
-        /*
-         * TODO: Remove this assert and if server doesn't send the filehandle,
-         *       make a LOOKUP RPC request to query the filehandle and pass
-         *       that to fuse. Since this callback is called in the context of
-         *       the libnfs thread, we should not issue a sync LOOKUP.
-         *       Same needs to be done for other create APIs like mkdir,
-         *       symlink and mknod.
-         */
-        assert(
-            res->CREATE3res_u.resok.obj.handle_follows &&
-            res->CREATE3res_u.resok.obj_attributes.attributes_follow);
 
         task->get_client()->reply_entry(
             task,
@@ -960,7 +1079,40 @@ static void setattr_callback(
      */
     task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
 
+    INJECT_SETATTR_FH_POPULATE_FAILURE(res, task);
+
     if (status == 0) {
+        if (!res->SETATTR3res_u.resok.obj_wcc.after.attributes_follow) {
+            /* 
+             * For NFS, the postop attributes are optional, but fuse expects
+             * us to pass attributes in the callback. If NFS server fails to
+             * return the postop attributes, make a GETATTR RPC request to
+             * query the attributes and pass that to fuse.
+             */
+            AZLogWarn("Setattr failed to return postop req={}, ino={}."
+                " Issuing getattr RPC to fetch post-op attributes.",
+                fmt::ptr(task->get_fuse_req()),
+                task->rpc_api->setattr_task.get_ino());
+
+            struct fuse_req *req = task->get_fuse_req();
+            fuse_ino_t ino = task->rpc_api->setattr_task.get_ino();
+
+            /*
+             * Free the current task as the response will be sent by the
+             * getattr task made below.
+             * Note: task should not be accessed after this.
+             */
+            task->free_rpc_task();
+
+            struct rpc_task *getattr_tsk =
+                task->get_client()->get_rpc_task_helper()->alloc_rpc_task(
+                FUSE_GETATTR);
+            getattr_tsk->init_getattr(req, ino);
+            getattr_tsk->run_getattr();
+
+            return;
+        }
+
         UPDATE_INODE_WCC(inode, res->SETATTR3res_u.resok.obj_wcc);
 
         struct stat st = {};
@@ -1012,6 +1164,8 @@ void mknod_callback(
         task->get_client()->get_nfs_inode_from_ino(ino);
     const int status = task->status(rpc_status, NFS_STATUS(res));
 
+    INJECT_MKNOD_FH_POPULATE_FAILURE(res, task);
+
     /*
      * Now that the request has completed, we can query libnfs for the
      * dispatch time.
@@ -1019,6 +1173,46 @@ void mknod_callback(
     task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
 
     if (status == 0) {
+        if (!res->CREATE3res_u.resok.obj.handle_follows) {
+            /*
+             * If the server doesn't send the filehandle (which is perfectly
+             * valid), make a LOOKUP RPC request to query the filehandle and
+             * pass that to fuse.
+             */
+            AZLogWarn("mknod failed to return filehandle, req={}, "
+                "parent_ino={}, name={}. Issuing lookup.",
+                fmt::ptr(task->get_fuse_req()),
+                task->rpc_api->mknod_task.get_parent_ino(),
+                task->rpc_api->mknod_task.get_file_name());
+
+            struct fuse_req *req = task->get_fuse_req();
+            fuse_ino_t parent_ino = task->rpc_api->mknod_task.get_parent_ino();
+            char *file_name = ::strdup(
+                task->rpc_api->mknod_task.get_file_name());
+
+            /*
+             * Free the current task as the response will be sent by the
+             * lookup task made below.
+             * Note: task should not be accessed after this.
+             */
+            task->free_rpc_task();
+
+            struct rpc_task *lookup_tsk =
+                    task->get_client()->get_rpc_task_helper()->alloc_rpc_task(
+                        FUSE_LOOKUP);
+            lookup_tsk->init_lookup(
+                req,
+                file_name,
+                parent_ino);
+
+            // Mark the lookup task as being called to populate the fh by mknod.
+            lookup_tsk->rpc_api->lookup_task.set_called_for_optype(FUSE_MKNOD);
+
+            lookup_tsk->run_lookup();
+            ::free(file_name);
+            return;
+        }
+
         /*
          * See comment above readdirectory_cache::lookuponly, why we don't need
          * to call UPDATE_INODE_ATTR() to invalidate the readdirectory_cache,
@@ -1031,10 +1225,6 @@ void mknod_callback(
         } else {
             UPDATE_INODE_ATTR(inode, res->CREATE3res_u.resok.dir_wcc.after);
         }
-
-        assert(
-            res->CREATE3res_u.resok.obj.handle_follows &&
-            res->CREATE3res_u.resok.obj_attributes.attributes_follow);
 
         task->get_client()->reply_entry(
             task,
@@ -1072,6 +1262,8 @@ void mkdir_callback(
         task->get_client()->get_nfs_inode_from_ino(ino);
     const int status = task->status(rpc_status, NFS_STATUS(res));
 
+    INJECT_MKDIR_FH_POPULATE_FAILURE(res, task);
+
     /*
      * Now that the request has completed, we can query libnfs for the
      * dispatch time.
@@ -1079,6 +1271,46 @@ void mkdir_callback(
     task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
 
     if (status == 0) {
+        if (!res->MKDIR3res_u.resok.obj.handle_follows) {
+            /*
+             * If the server doesn't send the filehandle (which is perfectly
+             * valid), make a LOOKUP RPC request to query the filehandle and
+             * pass that to fuse.
+             */
+            AZLogWarn("mkdir failed to return filehandle, req={}, "
+                "parent_ino={}, name={}. Issuing lookup.",
+                fmt::ptr(task->get_fuse_req()),
+                task->rpc_api->mkdir_task.get_parent_ino(),
+                task->rpc_api->mkdir_task.get_dir_name());
+
+            struct fuse_req *req = task->get_fuse_req();
+            fuse_ino_t parent_ino = task->rpc_api->mkdir_task.get_parent_ino();
+            char *dir_name = ::strdup(
+                task->rpc_api->mkdir_task.get_dir_name());
+
+            /*
+             * Free the current task as the response will be sent by the
+             * lookup task made below.
+             * Note: task should not be accessed after this.
+             */
+            task->free_rpc_task();
+
+            struct rpc_task *lookup_tsk =
+                    task->get_client()->get_rpc_task_helper()->alloc_rpc_task(
+                        FUSE_LOOKUP);
+
+            lookup_tsk->init_lookup(
+                req,
+                dir_name,
+                parent_ino);
+
+            // Mark the lookup task as being called to populate the fh by mkdir.
+            lookup_tsk->rpc_api->lookup_task.set_called_for_optype(FUSE_MKDIR);
+
+            lookup_tsk->run_lookup();
+            ::free(dir_name);
+            return;
+        }
         /*
          * See comment above readdirectory_cache::lookuponly, why we don't need
          * to call UPDATE_INODE_ATTR() to invalidate the readdirectory_cache,
@@ -1091,10 +1323,6 @@ void mkdir_callback(
         } else {
             UPDATE_INODE_ATTR(inode, res->MKDIR3res_u.resok.dir_wcc.after);
         }
-
-        assert(
-            res->MKDIR3res_u.resok.obj.handle_follows &&
-            res->MKDIR3res_u.resok.obj_attributes.attributes_follow);
 
         task->get_client()->reply_entry(
             task,
@@ -1447,12 +1675,17 @@ void rpc_task::run_lookup()
 
             struct fattr3 fattr;
             child_inode->fattr3_from_stat(fattr);
-            get_client()->reply_entry(this, &child_inode->get_fh(), &fattr, nullptr);
+            get_client()->reply_entry(
+                this,
+                &child_inode->get_fh(),
+                &fattr,
+                rpc_api->lookup_task.get_fuse_file());
 
             // Drop the ref held by dnlc_lookup().
             child_inode->decref();
             return;
-        } else if (negative_confirmed) {
+        } else if (negative_confirmed &&
+            (rpc_api->lookup_task.get_called_for_optype() == FUSE_LOOKUP)) {
             AZLogDebug("[{}/{}] Returning cached lookup (negative)",
                     parent_ino, filename);
 

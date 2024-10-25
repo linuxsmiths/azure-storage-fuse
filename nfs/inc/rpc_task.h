@@ -103,6 +103,24 @@ struct lookup_rpc_task
         parent_ino = parent;
     }
 
+    void set_called_for_optype(enum fuse_opcode optype)
+    {
+        called_for_optype = optype;
+    }
+
+    void set_fuse_file(fuse_file_info *fileinfo)
+    {
+        if (fileinfo != nullptr)
+        {
+            file = *fileinfo;
+            file_ptr = &file;
+        }
+        else
+        {
+            file_ptr = nullptr;
+        }
+    }
+
     fuse_ino_t get_parent_ino() const
     {
         return parent_ino;
@@ -113,6 +131,11 @@ struct lookup_rpc_task
         return file_name;
     }
 
+    struct fuse_file_info *get_fuse_file() const
+    {
+        return file_ptr;
+    }
+
     /**
      * Release any resources used up by this task.
      */
@@ -121,9 +144,22 @@ struct lookup_rpc_task
         ::free(file_name);
     }
 
+    enum fuse_opcode get_called_for_optype() const
+    {
+        return called_for_optype;
+    }
+
 private:
     fuse_ino_t parent_ino;
     char *file_name;
+
+    /*
+     * This will be set to the optype for which this lookup request is made.
+     */
+    enum fuse_opcode called_for_optype;
+
+    struct fuse_file_info file;
+    struct fuse_file_info *file_ptr;
 };
 
 struct access_rpc_task
