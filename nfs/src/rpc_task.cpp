@@ -742,6 +742,27 @@ static void write_iov_callback(
     }
 
     delete bciov;
+
+    // check if commit is pending.
+    if (!inode->filecache_handle->is_flushing_in_progress()) {
+        bool create_commit_task = false;
+
+        {
+            std::unique_lock<std::shared_mutex> lock (inode->ilock);
+            if (inode->is_commit_pending()) {
+                inode->set_commit_in_progress();
+                create_commit_task = true;
+            }
+        }
+
+        if (create_commit_task) {
+            // Create a new flush_task for the remaining bc_iovec.
+            struct rpc_task *flush_task =
+                    client->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
+            flush_task->init_flush(nullptr /* fuse_req */, ino);
+            flush_task->issue_commit_rpc();
+        }
+    }
     task->rpc_api->pvt = nullptr;
 
     // Release the task.
@@ -783,15 +804,59 @@ static void commit_callback(
      * dispatch time.
      */
     task->get_stats().on_rpc_complete(rpc_get_pdu(rpc), NFS_STATUS(res));
-
     if (status == 0) {
+        auto bc_vec = task->bc_vec;
+        uint64_t offset = 0;
+        uint64_t length = 0;
+
+        for (auto &bc : bc_vec)
+        {
+            struct membuf *mb = bc.get_membuf();
+            assert(mb->is_inuse());
+            assert(mb->is_locked());
+            assert(mb->is_commit_pending());
+            assert(mb->is_uptodate());
+
+            mb->clear_commit_pending();
+            mb->clear_locked();
+            mb->clear_inuse();
+
+            if (offset == 0 && length == 0) {
+                offset = bc.offset;
+                length = bc.length;
+            } else if (offset + length == bc.offset) {
+                length += bc.length;
+            } else {
+                auto release = inode->filecache_handle->release(offset, length);
+                AZLogInfo("BC released {}, asked for {}", release, length);
+                offset = 0;
+                length = 0;
+            }
+        }
+
+        if (length != 0) {
+            assert(length != 0);
+            auto release = inode->filecache_handle->release(offset, length);
+
+            AZLogInfo("BC offset {}, asked for {}, release {}", (offset/1048576), (length/1048576), release);
+        }
+
+        if (task->get_fuse_req() != nullptr) {
+            task->reply_error(status);
+        } else {
+            // AZLogInfo("Commit RPC clearing the bc_vec");
+            task->bc_vec.clear();
+            task->free_rpc_task();
+        }
+
         UPDATE_INODE_WCC(inode, res->COMMIT3res_u.resok.file_wcc);
-        task->reply_error(status);
     } else if (NFS_STATUS(res) == NFS3ERR_JUKEBOX) {
         task->get_client()->jukebox_retry(task);
     } else {
         task->reply_error(status);
     }
+
+    inode->clear_commit_in_progress();
 }
 
 void rpc_task::issue_commit_rpc()
@@ -807,7 +872,10 @@ void rpc_task::issue_commit_rpc()
     bool rpc_retry = false;
     
     AZLogDebug("issue_commit_rpc");
-
+    /*
+     * Get the bcs marked for commit_pending.
+     */
+    bc_vec =  inode->filecache_handle->get_commit_pending_bc_range();
 
     args.file = inode->get_fh();
     args.offset = 0;
@@ -1700,21 +1768,30 @@ void rpc_task::run_write()
      */
     const uint64_t bytes_to_flush =
         inode->filecache_handle->get_bytes_to_flush();
+    /*
+     * How many bytes in the cache need to be committed.
+     */
+    const uint64_t bytes_to_commit =
+        inode->filecache_handle->get_bytes_to_commit();
+
+    const bool need_to_flush = bytes_to_flush > max_dirty_extent;
+    const bool need_to_commit = bytes_to_commit > max_dirty_extent;
+    const bool inline_write = inode->filecache_handle->do_inline_write();
 
     AZLogDebug("[{}] extent_left: {}, extent_right: {}, size: {}, "
-               "bytes_to_flush: {} (max_dirty_extent: {})",
+               "bytes_to_flush: {}, bytes_to_commit: {}, (max_dirty_extent: {})",
                ino, extent_left, extent_right,
                (extent_right - extent_left),
-               bytes_to_flush,
+               bytes_to_flush, bytes_to_commit,
                max_dirty_extent);
-#if 0
+#if 1
     if ((extent_right - extent_left) < max_dirty_extent) {
         /*
          * Current extent is not big enough to be flushed, see if we have
          * enough dirty data that needs to be flushed. This is to cause
          * random writes to be periodically flushed.
          */
-        if (bytes_to_flush < max_dirty_extent) {
+        if (!need_to_commit && !need_to_flush) {
             AZLogDebug("Reply write without syncing to Blob");
             reply_write(length);
             return;
@@ -1728,12 +1805,66 @@ void rpc_task::run_write()
         extent_right = UINT64_MAX;
     }
 
+    if (need_to_commit) {
+        /*
+         * If commit is in progress and inline_write limit not hit,
+         * we can safely write to cache and return.
+         */
+        if (inode->is_commit_progress() && !inline_write) {
+            AZLogDebug("Reply write without syncing to Blob, commit is in progress and inline_write is false");
+            reply_write(length);
+            return;
+        }
+
+        /*
+         * We want to commit, but we need to wait for current flushing to complete.
+         * 1. If flushing is going on, set commit_pending to inode, when last mb flushed, 
+         *    write_iov_callback, start new task to commit the data.
+         * 2. If flushing is not going on, then create the task and start commit of data.
+         */
+        if (!inode->is_commit_progress())
+        {
+            assert(inode->is_commit_progress() == false);
+            bool start_commit_task = false;
+            {
+                std::unique_lock<std::shared_mutex> lock(inode->ilock);
+                if (!inode->filecache_handle->is_flushing_in_progress()) {
+                    inode->set_commit_in_progress();
+                    start_commit_task = true;
+                } else if (!inode->is_commit_progress()) {
+                    inode->set_commit_in_pending();
+                }
+            }
+
+            if (start_commit_task) {
+                struct rpc_task *commit_task =
+                    get_client()->get_rpc_task_helper()->alloc_rpc_task(FUSE_FLUSH);
+                commit_task->init_flush(nullptr /* fuse_req */, ino);
+                commit_task->issue_commit_rpc();
+            }
+
+            assert(inode->is_commit_progress() == true);
+
+            if (!inline_write) {
+                AZLogDebug("Reply write without syncing to Blob, intiate commit, inline_write is false");
+                reply_write(length);
+                return;
+            }
+        }
+    }
+
     /*
      * Ok, we need to flush the extent now, check if we must do it inline.
      */
-    if (inode->filecache_handle->do_inline_write()) {
+    if (inline_write) {
         INC_GBL_STATS(inline_writes, 1);
 
+        AZLogInfo("[START] Wait for commit in progress to finish");
+        while (inode->is_commit_progress()) {
+           // AZLogInfo("Wait for commit in progress to finish, sleep for 1msec");
+            ::usleep(1000);
+        }
+        AZLogInfo("[END] Wait for commit in progress to finish");
         AZLogDebug("[{}] Inline write, {} bytes extent @ [{}, {})",
                    ino, (extent_right - extent_left),
                    extent_left, extent_right);
@@ -1751,6 +1882,7 @@ void rpc_task::run_write()
             return;
         }
     }
+
 #endif
     std::vector<bytes_chunk> bc_vec =
         inode->filecache_handle->get_dirty_bc_range(extent_left, extent_right);
@@ -1760,6 +1892,7 @@ void rpc_task::run_write()
         return;
     }
 
+    AZLogInfo("Starting Async Flush, bytes_to_flush {}, bytes_to_commit {}", bytes_to_flush, bytes_to_commit);
     /*
      * Pass is_flush as false, since we don't want the writes to complete
      * before returning.
@@ -1775,12 +1908,38 @@ void rpc_task::run_flush()
     const fuse_ino_t ino = rpc_api->flush_task.get_ino();
     struct nfs_inode *const inode = get_client()->get_nfs_inode_from_ino(ino);
 
+    AZLogInfo("Flush command");
+
+    while (inode->is_commit_progress()) {
+        AZLogInfo("Wait for commit to finish before doing flush");
+        ::usleep(1000);
+    }
+
     auto ret = inode->flush_cache_and_wait();
     if (ret != 0) {
         reply_error(ret);
     }
 
-    issue_commit_rpc();
+    bool issue_commit = false;
+    {
+        std::unique_lock<std::shared_mutex> lock (inode->ilock);
+        if (inode->filecache_handle->is_flushing_in_progress()) {
+            inode->set_commit_in_pending();
+        } else {
+            inode->set_commit_in_progress();
+            issue_commit = true;
+        }
+    }
+    if (issue_commit) {
+        issue_commit_rpc();
+    } else {
+        while (inode->is_commit_progress()) {
+            AZLogInfo("Wait for commit to finish");
+            ::usleep(1000);
+        }
+        inode->set_commit_in_progress();
+        issue_commit_rpc();
+    }
 }
 
 void rpc_task::run_getattr()

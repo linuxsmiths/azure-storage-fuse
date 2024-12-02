@@ -251,6 +251,15 @@ struct nfs_inode
      */
     int write_error = 0;
 
+    typedef enum {
+        commit_not_running = 0,
+        commit_pending = 1,
+        commit_in_progress = 2,
+        invalid_state = 3,
+    } commit_state_t;
+
+    commit_state_t commit_state;
+
     /**
      * TODO: Initialize attr with postop attributes received in the RPC
      *       response.
@@ -862,6 +871,48 @@ struct nfs_inode
     int get_write_error() const
     {
         return write_error;
+    }
+
+    commit_state_t get_commit_state()
+    {
+        assert(commit_state < invalid_state);
+        return commit_state;
+    }
+
+    bool is_commit_pending()
+    {
+        assert(commit_state < invalid_state);
+        return (commit_state == commit_pending);
+    }
+
+    void set_commit_in_progress()
+    {
+        assert(commit_state < invalid_state);
+        assert(commit_state != commit_in_progress);
+        commit_state = commit_in_progress;
+    }
+
+    void set_commit_in_pending()
+    {
+        assert(commit_state < invalid_state);
+        assert(commit_state == commit_not_running);
+        commit_state = commit_pending;
+    }
+
+    void clear_commit_in_progress()
+    {
+        assert(commit_state < invalid_state);
+        assert(commit_state == commit_in_progress);
+        commit_state = commit_not_running;
+    }
+
+    /**
+     * Returns the error, saved by prior call to set_write_error().
+     */
+    bool is_commit_progress() const
+    {
+        assert(commit_state < invalid_state);
+        return (commit_state == commit_in_progress || commit_state == commit_pending);
     }
 
     /**

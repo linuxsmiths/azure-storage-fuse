@@ -445,6 +445,7 @@ struct bc_iovec
                 assert(mb->is_inuse() && mb->is_locked());
                 assert(mb->is_flushing() && mb->is_dirty() && mb->is_uptodate());
 
+                mb->set_commit_pending();
                 mb->clear_dirty();
                 mb->clear_flushing();
                 mb->clear_locked();
